@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="xposedscope">
+        <item>com.android.providers.media.module</item>
+        <item>com.google.android.providers.media.module</item>
+        <item>com.android.providers.media</item>
+        <item>com.android.photopicker</item>
+    </string-array>
+</resources>
