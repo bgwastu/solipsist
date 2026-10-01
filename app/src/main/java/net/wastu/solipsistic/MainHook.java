@@ -63,10 +63,21 @@ public class MainHook implements IXposedHookLoadPackage {
 
     @Override
     public void handleLoadPackage(LoadPackageParam lpparam) throws Throwable {
-        if ("android".equals(lpparam.packageName)
-                || "system".equals(lpparam.packageName)
-                || "com.android.systemui".equals(lpparam.packageName)
-                || "net.wastu.solipsistic".equals(lpparam.packageName)) {
+        if ("net.wastu.solipsistic".equals(lpparam.packageName)) {
+            return;
+        }
+
+        if ("android".equals(lpparam.packageName) || "system".equals(lpparam.packageName)) {
+            SystemServerPrivacyShield.init(lpparam);
+            return;
+        }
+
+        if ("com.android.providers.settings".equals(lpparam.packageName)) {
+            SystemServerPrivacyShield.hookSettingsProvider(lpparam);
+            return;
+        }
+
+        if ("com.android.systemui".equals(lpparam.packageName)) {
             return;
         }
 

@@ -5,5 +5,8 @@
         <item>com.google.android.providers.media.module</item>
         <item>com.android.providers.media</item>
         <item>com.android.photopicker</item>
+        <item>android</item>
+        <item>system</item>
+        <item>com.android.providers.settings</item>
     </string-array>
 </resources>
