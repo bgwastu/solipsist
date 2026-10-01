@@ -42,14 +42,27 @@ public class AppFilter {
      */
     public static boolean isSystemApp(ApplicationInfo appInfo) {
         if (appInfo == null) return false;
-        return (appInfo.flags & (ApplicationInfo.FLAG_SYSTEM | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0;
+        if ((appInfo.flags & (ApplicationInfo.FLAG_SYSTEM | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0) {
+            return true;
+        }
+        if (appInfo.sourceDir != null) {
+            if (appInfo.sourceDir.startsWith("/system/")
+                    || appInfo.sourceDir.startsWith("/product/")
+                    || appInfo.sourceDir.startsWith("/vendor/")
+                    || appInfo.sourceDir.startsWith("/system_ext/")
+                    || appInfo.sourceDir.startsWith("/odm/")
+                    || appInfo.sourceDir.startsWith("/apex/")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
      * Checks whether a package (and its ApplicationInfo, if available) should be exempt from Solipsistic.
      * Exempt if:
      * 1. It is a camera app.
-     * 2. It is a system app (or framework/system component).
+     * 2. It is a system app (or framework/system component/OEM preloaded app).
      */
     public static boolean isExemptPackage(String packageName, ApplicationInfo appInfo) {
         if (packageName == null) return false;
@@ -76,6 +89,17 @@ public class AppFilter {
 
         // 2. Camera apps are explicitly exempt per user requirement
         if (isCameraApp(packageName)) {
+            PKG_EXEMPT_CACHE.put(packageName, true);
+            return true;
+        }
+
+        // 3. OEM / MIUI system packages and stock photo/gallery apps
+        if (packageName.startsWith("com.miui.")
+                || packageName.startsWith("com.xiaomi.")
+                || packageName.startsWith("com.mediatek.")
+                || packageName.startsWith("com.qualcomm.")
+                || "com.google.android.apps.photos".equals(packageName)
+                || packageName.toLowerCase().contains("gallery")) {
             PKG_EXEMPT_CACHE.put(packageName, true);
             return true;
         }
@@ -152,6 +176,16 @@ public class AppFilter {
                         if (pkg == null) continue;
 
                         if (isCameraApp(pkg)) {
+                            exempt = true;
+                            break;
+                        }
+
+                        if (pkg.startsWith("com.miui.")
+                                || pkg.startsWith("com.xiaomi.")
+                                || pkg.startsWith("com.mediatek.")
+                                || pkg.startsWith("com.qualcomm.")
+                                || "com.google.android.apps.photos".equals(pkg)
+                                || pkg.toLowerCase().contains("gallery")) {
                             exempt = true;
                             break;
                         }
