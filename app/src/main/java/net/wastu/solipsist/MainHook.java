@@ -52,13 +52,70 @@ public class MainHook implements IXposedHookLoadPackage {
         "Artist",
         "Copyright"
     };
-
+    private static final Set<String> IMAGE_EXTENSIONS = new HashSet<String>(Arrays.asList(
+        "jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif", "dng", "cr2", "nef", "arw", "tif", "tiff", "svg", "ico"
+    ));
     private static final Set<String> VIDEO_EXTENSIONS = new HashSet<String>(Arrays.asList(
         "mp4", "mkv", "mov", "3gp", "3gpp", "3g2", "webm", "avi", "flv", "ts", "m4v", "wmv"
     ));
     private static final Set<String> AUDIO_EXTENSIONS = new HashSet<String>(Arrays.asList(
         "mp3", "m4a", "aac", "wav", "ogg", "flac", "opus", "wma", "mid"
     ));
+
+    private static boolean isMediaMime(String mime) {
+        if (mime == null) return false;
+        String lower = mime.toLowerCase();
+        return lower.startsWith("image/") || lower.startsWith("video/") || lower.startsWith("audio/");
+    }
+
+    private static boolean isMediaFilePath(String path) {
+        if (path == null) return false;
+        int dot = path.lastIndexOf('.');
+        if (dot >= 0 && dot < path.length() - 1) {
+            String ext = path.substring(dot + 1).toLowerCase();
+            return IMAGE_EXTENSIONS.contains(ext) || VIDEO_EXTENSIONS.contains(ext) || AUDIO_EXTENSIONS.contains(ext);
+        }
+        return false;
+    }
+
+    private static boolean isRowMedia(Cursor cursor, Uri uri, String mimeHint) {
+        if (mimeHint != null && isMediaMime(mimeHint)) {
+            return true;
+        }
+        if (uri != null) {
+            String uriStr = uri.toString().toLowerCase();
+            if (uriStr.contains("/images/") || uriStr.contains("/video/") || uriStr.contains("/audio/")) {
+                return true;
+            }
+        }
+        try {
+            int mimeIdx = cursor.getColumnIndex("mime_type");
+            if (mimeIdx >= 0) {
+                String mime = cursor.getString(mimeIdx);
+                if (mime != null) {
+                    return isMediaMime(mime);
+                }
+            }
+        } catch (Throwable ignored) {}
+        try {
+            int nameIdx = cursor.getColumnIndex("_display_name");
+            String name = nameIdx >= 0 ? cursor.getString(nameIdx) : null;
+            if (name == null) {
+                int dataIdx = cursor.getColumnIndex("_data");
+                if (dataIdx >= 0) name = cursor.getString(dataIdx);
+            }
+            if (name != null) {
+                return isMediaFilePath(name);
+            }
+        } catch (Throwable ignored) {}
+        if (uri != null) {
+            String auth = uri.getAuthority();
+            if (auth != null && auth.contains("picker")) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     @Override
     public void handleLoadPackage(LoadPackageParam lpparam) throws Throwable {
@@ -183,6 +240,31 @@ public class MainHook implements IXposedHookLoadPackage {
                 RuntimeState.reportHook("Media.filenameSetup", t);
             }
 
+            final ThreadLocal<Boolean> currentOpenIsMedia = new ThreadLocal<Boolean>();
+            try {
+                Class<?> mediaProviderClass = XposedHelpers.findClass(
+                    "com.android.providers.media.MediaProvider",
+                    lpparam.classLoader
+                );
+                for (java.lang.reflect.Method m : mediaProviderClass.getDeclaredMethods()) {
+                    if ("openWithFuse".equals(m.getName())) {
+                        XposedBridge.hookMethod(m, new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                                if (param.args.length > 0 && param.args[0] instanceof String) {
+                                    String path = (String) param.args[0];
+                                    currentOpenIsMedia.set(Boolean.valueOf(isMediaFilePath(path)));
+                                }
+                            }
+                            @Override
+                            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                                currentOpenIsMedia.remove();
+                            }
+                        });
+                    }
+                }
+            } catch (Throwable ignored) {}
+
             // B. Force Redaction for Third-Party Apps
             try {
                 Class<?> pendingOpenInfoClass = XposedHelpers.findClass(
@@ -193,6 +275,10 @@ public class MainHook implements IXposedHookLoadPackage {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                         if (!RuntimeState.isEnabled()) return;
+                        Boolean isMedia = currentOpenIsMedia.get();
+                        if (isMedia != null && !isMedia.booleanValue()) {
+                            return;
+                        }
                         int uid = (Integer) param.args[0];
                         if (uid > 10000 && uid != android.os.Process.myUid()) {
                             if (!AppFilter.isExemptUid(uid)) {
@@ -359,8 +445,9 @@ public class MainHook implements IXposedHookLoadPackage {
                 window.setNumColumns(getColumnCount());
                 try {
                     for (int row = position; moveToPosition(row) && window.allocRow(); row++) {
+                        boolean rowIsMedia = isRowMedia(this, uri, mimeHint);
                         for (int column = 0; column < getColumnCount(); column++) {
-                            int type = getType(column);
+                            int type = (rowIsMedia && column == mDataCol) ? Cursor.FIELD_TYPE_NULL : super.getType(column);
                             boolean written;
                             switch (type) {
                                 case Cursor.FIELD_TYPE_NULL:
@@ -391,13 +478,18 @@ public class MainHook implements IXposedHookLoadPackage {
 
             @Override
             public int getType(int columnIndex) {
-                return RuntimeState.isEnabled() && columnIndex == mDataCol
-                        ? Cursor.FIELD_TYPE_NULL : super.getType(columnIndex);
+                if (!RuntimeState.isEnabled() || columnIndex != mDataCol) {
+                    return super.getType(columnIndex);
+                }
+                return isRowMedia(this, uri, mimeHint) ? Cursor.FIELD_TYPE_NULL : super.getType(columnIndex);
             }
 
             @Override
             public byte[] getBlob(int columnIndex) {
-                return RuntimeState.isEnabled() && columnIndex == mDataCol ? null : super.getBlob(columnIndex);
+                if (!RuntimeState.isEnabled() || columnIndex != mDataCol) {
+                    return super.getBlob(columnIndex);
+                }
+                return isRowMedia(this, uri, mimeHint) ? null : super.getBlob(columnIndex);
             }
 
             @Override
@@ -418,16 +510,21 @@ public class MainHook implements IXposedHookLoadPackage {
                 if (!RuntimeState.isEnabled()) return super.getString(columnIndex);
                 if (columnIndex >= 0) {
                     if (columnIndex == mDisplayNameCol) {
+                        if (!isRowMedia(this, uri, mimeHint)) {
+                            return super.getString(mDisplayNameCol);
+                        }
                         String origName = null;
                         try {
                             origName = super.getString(mDisplayNameCol);
                         } catch (Throwable ignored) {}
-                    String genericName = computeGenericName(this, uri, origName, true, mimeHint);
-                    return genericName;
+                        return computeGenericName(this, uri, origName, true, mimeHint);
                     } else if (columnIndex == mTitleCol) {
+                        if (!isRowMedia(this, uri, mimeHint)) {
+                            return super.getString(mTitleCol);
+                        }
                         return computeGenericName(this, uri, null, false, mimeHint);
                     } else if (columnIndex == mDataCol) {
-                        return null; // Use the content URI; a fabricated file path cannot be opened.
+                        return isRowMedia(this, uri, mimeHint) ? null : super.getString(mDataCol);
                     }
                 }
                 return super.getString(columnIndex);
