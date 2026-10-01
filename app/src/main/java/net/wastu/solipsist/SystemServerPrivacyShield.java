@@ -43,7 +43,6 @@ public class SystemServerPrivacyShield {
     public static void init(LoadPackageParam lpparam) {
         XposedBridge.log(TAG + " Initializing System Server hooks in: " + lpparam.packageName);
         hookAccessibilityManagerService(lpparam);
-        hookSettingsProvider(lpparam);
         hookComputerEngine(lpparam);
     }
 

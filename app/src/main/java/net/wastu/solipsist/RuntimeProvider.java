@@ -20,11 +20,8 @@ public final class RuntimeProvider extends ContentProvider {
     static final Uri EVENTS_URI = Uri.parse("content://" + AUTHORITY + "/events");
     static final String PREFS = "module_state";
     static final String ENABLED = "enabled";
-    private RuntimeStore store;
-
     @Override
     public boolean onCreate() {
-        store = new RuntimeStore(getContext());
         return true;
     }
 
@@ -42,21 +39,33 @@ public final class RuntimeProvider extends ContentProvider {
 
     @Override
     public int bulkInsert(Uri uri, ContentValues[] values) {
-        if (!EVENTS_URI.equals(uri) || values == null || values.length == 0 || values.length > 64) return 0;
-        int uid = Binder.getCallingUid();
+        if (!EVENTS_URI.equals(uri)) return 0;
+        return acceptEvents(getContext(), values, Binder.getCallingUid());
+    }
+
+    static int acceptEvents(Context context, ContentValues[] values, int uid) {
+        if (values == null || values.length == 0 || values.length > 64) return 0;
         String caller = "";
+        String[] packages = null;
         if (uid >= 10000) {
-            String[] packages = getContext().getPackageManager().getPackagesForUid(uid);
+            packages = context.getPackageManager().getPackagesForUid(uid);
             if (packages == null || packages.length == 0) return 0;
             caller = packages[0];
         } else if (uid != Process.SYSTEM_UID && uid != Process.myUid()) {
             return 0;
         }
-        boolean privilegedReporter = uid < 10000
-                || "com.android.providers.media.module".equals(caller)
-                || "com.android.providers.media".equals(caller)
-                || "com.google.android.providers.media.module".equals(caller)
-                || "com.android.providers.settings".equals(caller);
+        boolean privilegedReporter = uid < 10000;
+        if (packages != null) {
+            for (String pkg : packages) {
+                if ("com.android.providers.media.module".equals(pkg)
+                        || "com.android.providers.media".equals(pkg)
+                        || "com.google.android.providers.media.module".equals(pkg)
+                        || "com.android.providers.settings".equals(pkg)) {
+                    privilegedReporter = true;
+                    break;
+                }
+            }
+        }
         ArrayList<Bundle> events = new ArrayList<>();
         for (ContentValues value : values) {
             if (value == null) continue;
@@ -70,13 +79,27 @@ public final class RuntimeProvider extends ContentProvider {
             event.putInt("targetUid", targetUid == null ? -1 : targetUid);
             if ("count".equals(event.getString("kind")) && privilegedReporter) {
                 if (event.getInt("targetUid") >= 10000) {
-                    String[] targetPackages = getContext().getPackageManager().getPackagesForUid(event.getInt("targetUid"));
+                    String[] targetPackages = context.getPackageManager().getPackagesForUid(event.getInt("targetUid"));
                     if (targetPackages != null && targetPackages.length > 0) event.putString("package", targetPackages[0]);
+                }
+            }
+            if (!privilegedReporter && packages != null) {
+                String reported = event.getString("package");
+                for (String pkg : packages) {
+                    if (pkg.equals(reported)) {
+                        caller = pkg;
+                        break;
+                    }
                 }
             }
             events.add(event);
         }
-        store.record(events, caller, privilegedReporter);
+        RuntimeStore store = new RuntimeStore(context);
+        try {
+            store.record(events, caller, privilegedReporter);
+        } finally {
+            store.close();
+        }
         return values.length;
     }
 

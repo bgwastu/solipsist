@@ -1,6 +1,6 @@
 package net.wastu.solipsist;
 
-import android.content.Context;
+import android.content.ContentResolver;
 import android.database.Cursor;
 import android.database.CrossProcessCursorWrapper;
 import android.database.CursorWindow;
@@ -10,10 +10,7 @@ import android.net.Uri;
 import android.os.Binder;
 import android.os.Bundle;
 import android.os.CancellationSignal;
-import android.os.Handler;
-import android.os.Looper;
 import android.webkit.MimeTypeMap;
-import android.widget.Toast;
 
 import java.io.FileDescriptor;
 import java.io.FileInputStream;
@@ -23,9 +20,9 @@ import java.nio.channels.FileChannel;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.security.SecureRandom;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -34,6 +31,8 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 
 public class MainHook implements IXposedHookLoadPackage {
+
+    private static final int FILENAME_SALT = new SecureRandom().nextInt();
 
     private static final String[] EXTRA_SENSITIVE_EXIF_TAGS = new String[] {
         "Make",
@@ -120,7 +119,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
                         Uri uri = (Uri) param.args[0];
                         RuntimeState.count("media_query", callingUid);
-                        param.setResult(wrapPickerCursor(cursor, uri));
+                        param.setResult(wrapPickerCursor(cursor, uri, null));
                     }
                 };
 
@@ -248,7 +247,7 @@ public class MainHook implements IXposedHookLoadPackage {
                             if (ExifInterface.isSupportedMimeType(mimeType)) {
                                 extraRanges = getExtraSensitiveExifRanges(fis, mimeType);
                             } else if (isIsoBmffMime(mimeType)) {
-                                extraRanges = getVideoSensitiveRanges(fis, mimeType, origRanges);
+                                extraRanges = getVideoSensitiveRanges(fis);
                             }
 
                             if (extraRanges != null && extraRanges.length > 0) {
@@ -299,10 +298,45 @@ public class MainHook implements IXposedHookLoadPackage {
 
         // Apply Privacy Shield (USB debugging, developer options, and accessibility hiding) to target apps
         PrivacyShieldHook.init(lpparam);
+        installAppMediaQueryHook();
         AdvancedReadObserver.install(lpparam);
     }
 
-    private static Cursor wrapPickerCursor(final Cursor cursor, final Uri uri) {
+    private static void installAppMediaQueryHook() {
+        try {
+            Set<XC_MethodHook.Unhook> installed = XposedBridge.hookAllMethods(ContentResolver.class, "query", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (!RuntimeState.isEnabled() || param.args.length == 0 || !(param.args[0] instanceof Uri)
+                            || !(param.getResult() instanceof Cursor)) return;
+                    Uri uri = (Uri) param.args[0];
+                    if (!"content".equals(uri.getScheme())) return;
+                    String authority = uri.getAuthority();
+                    if (authority == null || !(authority.contains("media") || authority.contains("photopicker")
+                            || authority.contains("photos") || authority.contains("documents"))) return;
+                    Cursor cursor = (Cursor) param.getResult();
+                    if (cursor.getColumnIndex("_display_name") < 0 && cursor.getColumnIndex("title") < 0
+                            && cursor.getColumnIndex("_data") < 0) return;
+                    String mime;
+                    try {
+                        mime = ((ContentResolver) param.thisObject).getType(uri);
+                    } catch (Throwable ignored) {
+                        return;
+                    }
+                    if (mime == null || !(mime.startsWith("image/") || mime.startsWith("video/")
+                            || mime.startsWith("audio/"))) return;
+                    RuntimeState.count("media_query");
+                    param.setResult(wrapPickerCursor(cursor, uri, mime));
+                }
+            });
+            if (installed.isEmpty()) RuntimeState.reportHook("Media.ContentResolver.query", new NoSuchMethodException("query"));
+            else RuntimeState.reportInstalled("Media.ContentResolver.query");
+        } catch (Throwable t) {
+            RuntimeState.reportHook("Media.ContentResolver.query", t);
+        }
+    }
+
+    private static Cursor wrapPickerCursor(final Cursor cursor, final Uri uri, final String mimeHint) {
         return new CrossProcessCursorWrapper(cursor) {
             private final int mDisplayNameCol = cursor.getColumnIndex("_display_name");
             private final int mTitleCol = cursor.getColumnIndex("title");
@@ -384,13 +418,10 @@ public class MainHook implements IXposedHookLoadPackage {
                         try {
                             origName = super.getString(mDisplayNameCol);
                         } catch (Throwable ignored) {}
-                        String genericName = computeGenericName(this, uri, origName, true);
-                        if (getCount() <= 1) {
-                            notifyFilenameAnonymized(genericName);
-                        }
-                        return genericName;
+                    String genericName = computeGenericName(this, uri, origName, true, mimeHint);
+                    return genericName;
                     } else if (columnIndex == mTitleCol) {
-                        return computeGenericName(this, uri, null, false);
+                        return computeGenericName(this, uri, null, false, mimeHint);
                     } else if (columnIndex == mDataCol) {
                         return null; // Use the content URI; a fabricated file path cannot be opened.
                     }
@@ -409,7 +440,7 @@ public class MainHook implements IXposedHookLoadPackage {
             || "application/mp4".equals(lower);
     }
 
-    private static String computeGenericName(Cursor cursor, Uri uri, String origName, boolean withExtension) {
+    private static String computeGenericName(Cursor cursor, Uri uri, String origName, boolean withExtension, String mimeHint) {
         String id = null;
         try {
             int idIdx = cursor.getColumnIndex("_id");
@@ -431,7 +462,9 @@ public class MainHook implements IXposedHookLoadPackage {
             }
         }
 
-        String mime = null;
+        id = Integer.toUnsignedString((id + FILENAME_SALT).hashCode(), 36);
+
+        String mime = mimeHint;
         try {
             int mimeIdx = cursor.getColumnIndex("mime_type");
             if (mimeIdx >= 0) {
@@ -508,23 +541,14 @@ public class MainHook implements IXposedHookLoadPackage {
 
             ExifInterface ex = new ExifInterface(fd);
             List<Long> ranges = new ArrayList<Long>();
-            List<String> redactedNames = new ArrayList<String>();
-
-            // Check if GPS tags were present (these are redacted by AOSP RedactionUtils)
-            if (ex.getAttribute("GPSLatitude") != null || ex.getAttribute("GPSLongitude") != null || ex.getAttribute("GPSAltitude") != null) {
-                redactedNames.add("GPS");
-            }
 
             for (String tag : EXTRA_SENSITIVE_EXIF_TAGS) {
                 long[] r = ex.getAttributeRange(tag);
                 if (r != null && r.length == 2 && r[1] > 0) {
                     ranges.add(r[0]);
                     ranges.add(r[0] + r[1]);
-                    redactedNames.add(tag);
                 }
             }
-
-            if (!redactedNames.isEmpty()) notifyExifChecked(redactedNames, "image");
 
             if (ranges.isEmpty()) {
                 return null;
@@ -540,16 +564,10 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
-    private static long[] getVideoSensitiveRanges(FileInputStream fis, String mimeType, long[] origRanges) {
+    private static long[] getVideoSensitiveRanges(FileInputStream fis) {
         if (fis == null) return null;
 
         List<Long> extraRanges = new ArrayList<Long>();
-        Set<String> redactedNames = new LinkedHashSet<String>();
-
-        // If AOSP RedactionUtils already identified GPS boxes (loci, ©xyz, gps )
-        if (origRanges != null && origRanges.length > 0) {
-            redactedNames.add("GPS");
-        }
 
         FileChannel channel = null;
         long origPos = -1;
@@ -557,7 +575,7 @@ public class MainHook implements IXposedHookLoadPackage {
             channel = fis.getChannel();
             origPos = channel.position();
             long fileSize = channel.size();
-            scanIsoBoxes(channel, 0, fileSize, extraRanges, redactedNames, 0);
+            scanIsoBoxes(channel, 0, fileSize, extraRanges, 0);
         } catch (Throwable t) {
             XposedBridge.log("[Solipsist] Error scanning video boxes: " + t.getMessage());
         } finally {
@@ -567,9 +585,6 @@ public class MainHook implements IXposedHookLoadPackage {
                 } catch (Throwable ignored) {}
             }
         }
-
-        String mediaKind = (mimeType != null && mimeType.startsWith("audio/")) ? "audio" : "video";
-        if (!redactedNames.isEmpty()) notifyExifChecked(new ArrayList<String>(redactedNames), mediaKind);
 
         if (extraRanges.isEmpty()) {
             return null;
@@ -581,7 +596,7 @@ public class MainHook implements IXposedHookLoadPackage {
         return result;
     }
 
-    private static void scanIsoBoxes(FileChannel channel, long start, long end, List<Long> ranges, Set<String> tags, int depth) throws IOException {
+    private static void scanIsoBoxes(FileChannel channel, long start, long end, List<Long> ranges, int depth) throws IOException {
         if (depth > 10) return;
         long pos = start;
         ByteBuffer buf = ByteBuffer.allocate(16);
@@ -612,7 +627,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
             // Container boxes: 'moov' (0x6D6F6F76), 'trak' (0x7472616B), 'mdia' (0x6D646961), 'minf' (0x6D696E66)
             if (typeInt == 0x6D6F6F76 || typeInt == 0x7472616B || typeInt == 0x6D646961 || typeInt == 0x6D696E66) {
-                scanIsoBoxes(channel, pos + headerSize, boxEnd, ranges, tags, depth + 1);
+                scanIsoBoxes(channel, pos + headerSize, boxEnd, ranges, depth + 1);
             } else if (typeInt == 0x6D766864 || typeInt == 0x746B6864 || typeInt == 0x6D646864) {
                 // Header boxes: 'mvhd', 'tkhd', 'mdhd'
                 channel.position(pos + headerSize);
@@ -626,7 +641,6 @@ public class MainHook implements IXposedHookLoadPackage {
                     if (timeEnd <= boxEnd) {
                         ranges.add(timeStart);
                         ranges.add(timeEnd);
-                        tags.add("DateTime");
                     }
                 }
             } else if (typeInt == 0x75647461) {
@@ -634,7 +648,6 @@ public class MainHook implements IXposedHookLoadPackage {
                 if (boxEnd > pos + 4) {
                     ranges.add(pos + 4);
                     ranges.add(boxEnd);
-                    tags.add("Device");
                 }
             }
 
@@ -677,140 +690,5 @@ public class MainHook implements IXposedHookLoadPackage {
             result[i] = merged.get(i);
         }
         return result;
-    }
-
-    private static final Object sMediaPrivacyLock = new Object();
-    private static String sPendingFilename = null;
-    private static List<String> sPendingExifTags = null;
-    private static String sPendingMediaKind = null;
-    private static boolean sHasExifCheck = false;
-    private static Runnable sMediaPrivacyRunnable = null;
-
-    private static void notifyFilenameAnonymized(final String genericName) {
-        synchronized (sMediaPrivacyLock) {
-            sPendingFilename = genericName;
-            scheduleMediaPrivacyToastLocked();
-        }
-    }
-
-    private static void notifyExifChecked(final List<String> redactedTags, final String mediaKind) {
-        synchronized (sMediaPrivacyLock) {
-            sPendingExifTags = redactedTags != null ? new ArrayList<String>(redactedTags) : null;
-            sPendingMediaKind = mediaKind;
-            sHasExifCheck = true;
-            scheduleMediaPrivacyToastLocked();
-        }
-    }
-
-    private static void scheduleMediaPrivacyToastLocked() {
-        if (sMediaPrivacyRunnable != null) {
-            return;
-        }
-        sMediaPrivacyRunnable = new Runnable() {
-            @Override
-            public void run() {
-                String filename;
-                List<String> tags;
-                String mediaKind;
-                boolean hadExif;
-                synchronized (sMediaPrivacyLock) {
-                    filename = sPendingFilename;
-                    tags = sPendingExifTags;
-                    mediaKind = sPendingMediaKind;
-                    hadExif = sHasExifCheck;
-                    sPendingFilename = null;
-                    sPendingExifTags = null;
-                    sPendingMediaKind = null;
-                    sHasExifCheck = false;
-                    sMediaPrivacyRunnable = null;
-                }
-
-                StringBuilder sb = new StringBuilder();
-                if (filename != null) {
-                    sb.append("🔒 ").append(filename);
-                }
-                if (hadExif) {
-                    if (sb.length() > 0) sb.append("\n");
-                    boolean isVideo = "video".equals(mediaKind) || (filename != null && (filename.startsWith("video_")
-                        || filename.endsWith(".mp4") || filename.endsWith(".mov")
-                        || filename.endsWith(".mkv") || filename.endsWith(".3gp")
-                        || filename.endsWith(".webm")));
-                    boolean isAudio = "audio".equals(mediaKind) || (filename != null && (filename.startsWith("audio_")
-                        || filename.endsWith(".mp3") || filename.endsWith(".m4a")
-                        || filename.endsWith(".aac") || filename.endsWith(".wav")
-                        || filename.endsWith(".flac") || filename.endsWith(".opus")));
-
-                    String typeLabel = (isVideo || isAudio) ? "metadata" : "EXIF";
-                    String cleanLabel = isVideo ? "🛡️ Video metadata clean" :
-                                       (isAudio ? "🛡️ Audio metadata clean" : "🛡️ EXIF clean");
-
-                    if (tags != null && !tags.isEmpty()) {
-                        sb.append("🛡️ Redacted ").append(tags.size()).append(" ")
-                          .append(typeLabel).append(" (").append(String.join(", ", tags)).append(")");
-                    } else {
-                        sb.append(cleanLabel);
-                    }
-                }
-
-                if (sb.length() > 0) {
-                    showToast(sb.toString());
-                }
-            }
-        };
-
-        try {
-            Looper mainLooper = Looper.getMainLooper();
-            if (mainLooper != null) {
-                new Handler(mainLooper).postDelayed(sMediaPrivacyRunnable, 300);
-            } else {
-                sMediaPrivacyRunnable.run();
-            }
-        } catch (Throwable t) {
-            sMediaPrivacyRunnable.run();
-        }
-    }
-
-    private static volatile long sLastToastTime = 0;
-    private static volatile String sLastToastMsg = "";
-
-    private static void showToast(final String message) {
-        if (message == null || message.isEmpty()) return;
-        long now = System.currentTimeMillis();
-        synchronized (MainHook.class) {
-            if (now - sLastToastTime < 2000) {
-                return;
-            }
-            if (message.equals(sLastToastMsg) && (now - sLastToastTime < 4000)) {
-                return;
-            }
-            sLastToastTime = now;
-            sLastToastMsg = message;
-        }
-
-        try {
-            Context targetCtx = null;
-            try {
-                targetCtx = (Context) XposedHelpers.callStaticMethod(
-                    XposedHelpers.findClass("android.app.ActivityThread", null),
-                    "currentApplication"
-                );
-            } catch (Throwable ignored) {}
-
-            if (targetCtx != null) {
-                final Context appCtx = targetCtx.getApplicationContext() != null
-                        ? targetCtx.getApplicationContext()
-                        : targetCtx;
-                new Handler(Looper.getMainLooper()).post(new Runnable() {
-                    @Override
-                    public void run() {
-                        try {
-                            Toast.makeText(appCtx, message, Toast.LENGTH_SHORT).show();
-                        } catch (Throwable t) {
-                            XposedBridge.log("[Solipsist] Toast failed: " + t.getMessage());
-                        }
-                    }
-                });
-            }
-        } catch (Throwable ignored) {}
     }
 }

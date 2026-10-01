@@ -1,6 +1,7 @@
 package net.wastu.solipsist;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.os.Bundle;
 import android.view.ViewGroup;
 import android.widget.Button;
@@ -33,7 +34,10 @@ public final class MainActivity extends Activity {
         enabled.setChecked(RuntimeProvider.prefs(this).getBoolean(RuntimeProvider.ENABLED, true));
         enabled.setOnCheckedChangeListener((button, checked) -> {
             boolean saved = RuntimeProvider.prefs(this).edit().putBoolean(RuntimeProvider.ENABLED, checked).commit();
-            if (saved) getContentResolver().notifyChange(RuntimeProvider.CONFIG_URI, null);
+            if (saved) {
+                getContentResolver().notifyChange(RuntimeProvider.CONFIG_URI, null);
+                sendBroadcast(new Intent(RuntimeBridgeReceiver.ACTION_CHANGED));
+            }
             refresh();
         });
         root.addView(enabled);

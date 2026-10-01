@@ -1,10 +1,15 @@
 package net.wastu.solipsist;
 
 import android.app.Application;
+import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.ContentValues;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.database.ContentObserver;
 import android.database.Cursor;
+import android.os.Build;
 import android.os.Bundle;
 
 import java.util.ArrayList;
@@ -37,8 +42,14 @@ final class RuntimeState {
     private static volatile String processPackage = "";
     private static volatile String processName = "";
     private static boolean observerRegistered;
+    private static boolean changeReceiverRegistered;
     private static boolean workerStarted;
     private static boolean syncFailureReported;
+    private static boolean bridgeFailureReported;
+    private static boolean bridgeInFlight;
+    private static long bridgeStartedAt;
+    private static long lastConfigRequest;
+    private static volatile long providerRetryAfter;
 
     private RuntimeState() {}
 
@@ -77,17 +88,34 @@ final class RuntimeState {
             if (context != null) return;
             context = incoming.getApplicationContext() != null ? incoming.getApplicationContext() : incoming;
             try {
+                BroadcastReceiver changes = new BroadcastReceiver() {
+                    @Override public void onReceive(Context ctx, Intent intent) {
+                        WORKER.execute(RuntimeState::refreshConfig);
+                    }
+                };
+                IntentFilter filter = new IntentFilter(RuntimeBridgeReceiver.ACTION_CHANGED);
+                if (Build.VERSION.SDK_INT >= 33) {
+                    context.registerReceiver(changes, filter, Context.RECEIVER_EXPORTED);
+                } else {
+                    context.registerReceiver(changes, filter);
+                }
+                changeReceiverRegistered = true;
+                reportInstalled("Runtime.configBroadcast");
+            } catch (Throwable t) {
+                reportHook("Runtime.configBroadcast", t);
+            }
+            try {
                 context.getContentResolver().registerContentObserver(RuntimeProvider.CONFIG_URI, false,
                         new ContentObserver(null) {
                             @Override public void onChange(boolean selfChange) { WORKER.execute(RuntimeState::refreshConfig); }
                         });
                 observerRegistered = true;
             } catch (Throwable t) {
-                reportHook("Runtime.configObserver", t);
+                if (!changeReceiverRegistered) reportHook("Runtime.configObserver", t);
             }
             if (!workerStarted) {
                 workerStarted = true;
-                long refreshSeconds = observerRegistered ? 30 : 1;
+                long refreshSeconds = observerRegistered || changeReceiverRegistered ? 30 : 1;
                 WORKER.scheduleWithFixedDelay(RuntimeState::refreshConfig, refreshSeconds, refreshSeconds, TimeUnit.SECONDS);
                 WORKER.scheduleWithFixedDelay(RuntimeState::flush, 5, 5, TimeUnit.SECONDS);
             }
@@ -98,21 +126,59 @@ final class RuntimeState {
 
     private static void refreshConfig() {
         Context ctx = context;
-        if (ctx != null) {
+        if (ctx != null && System.currentTimeMillis() >= providerRetryAfter) {
             try (Cursor cursor = ctx.getContentResolver().query(RuntimeProvider.CONFIG_URI,
                     new String[]{RuntimeProvider.ENABLED}, null, null, null)) {
                 if (cursor != null && cursor.moveToFirst()) {
                     enabled = cursor.getInt(0) != 0;
                     syncFailureReported = false;
+                    providerRetryAfter = 0;
                     return;
                 }
             } catch (Throwable ignored) {
-                // XSharedPreferences is the fallback for ROMs that block provider access.
+                // Package visibility can hide the provider from scoped apps.
             }
+            providerRetryAfter = System.currentTimeMillis() + 60000;
         }
+        if (requestBridgeConfig()) return;
         if (!readXposedFallback() && !syncFailureReported) {
             syncFailureReported = true;
             reportHook("Runtime.configSync", new IllegalStateException("config_unavailable"));
+        }
+    }
+
+    private static Intent bridgeIntent(String action) {
+        Intent intent = new Intent(action);
+        intent.setComponent(new ComponentName(MODULE_PACKAGE, RuntimeBridgeReceiver.class.getName()));
+        intent.addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES);
+        return intent;
+    }
+
+    private static boolean requestBridgeConfig() {
+        Context ctx = context;
+        if (ctx == null) return false;
+        long now = System.currentTimeMillis();
+        if (now - lastConfigRequest < 10000) return true;
+        lastConfigRequest = now;
+        try {
+            ctx.sendOrderedBroadcast(bridgeIntent(RuntimeBridgeReceiver.ACTION_CONFIG), null,
+                    new BroadcastReceiver() {
+                        @Override public void onReceive(Context context, Intent intent) {
+                            int result = getResultCode();
+                            if (result == RuntimeBridgeReceiver.RESULT_ENABLED
+                                    || result == RuntimeBridgeReceiver.RESULT_DISABLED) {
+                                enabled = result == RuntimeBridgeReceiver.RESULT_ENABLED;
+                                syncFailureReported = false;
+                            } else if (!readXposedFallback() && !syncFailureReported) {
+                                syncFailureReported = true;
+                                reportHook("Runtime.configSync", new IllegalStateException("bridge_unavailable"));
+                            }
+                        }
+                    }, null, 0, null, null);
+            return true;
+        } catch (Throwable t) {
+            reportHook("Runtime.configBridge", t);
+            return false;
         }
     }
 
@@ -165,6 +231,10 @@ final class RuntimeState {
         if (ctx == null) return;
         ArrayList<Bundle> batch = new ArrayList<>();
         synchronized (LOCK) {
+            if (bridgeInFlight) {
+                if (System.currentTimeMillis() - bridgeStartedAt < 30000) return;
+                bridgeInFlight = false;
+            }
             for (Map.Entry<String, Integer> entry : COUNTS.entrySet()) {
                 if (batch.size() >= 48) break;
                 String key = entry.getKey();
@@ -192,20 +262,67 @@ final class RuntimeState {
                 if (event.containsKey("targetUid")) value.put("targetUid", event.getInt("targetUid"));
                 values[i] = value;
             }
-            if (ctx.getContentResolver().bulkInsert(RuntimeProvider.EVENTS_URI, values) != values.length) return;
-            synchronized (LOCK) {
-                for (Bundle event : batch) {
-                    if ("count".equals(event.getString("kind"))) {
-                        String key = event.getString("category") + "|" + event.getInt("targetUid");
-                        int left = COUNTS.getOrDefault(key, 0) - event.getInt("delta");
-                        if (left > 0) COUNTS.put(key, left); else COUNTS.remove(key);
-                    } else {
-                        HOOKS.remove(event);
-                    }
+            if (System.currentTimeMillis() >= providerRetryAfter) {
+                if (ctx.getContentResolver().bulkInsert(RuntimeProvider.EVENTS_URI, values) == values.length) {
+                    acknowledge(batch);
+                    return;
                 }
+                providerRetryAfter = System.currentTimeMillis() + 60000;
             }
         } catch (Throwable t) {
-            // Keep the bounded queue for the next flush; never block a hooked call.
+            // Try explicit broadcast delivery for scoped apps that cannot resolve the provider.
+            providerRetryAfter = System.currentTimeMillis() + 60000;
+        }
+        try {
+            ContentValues[] values = new ContentValues[batch.size()];
+            for (int i = 0; i < batch.size(); i++) {
+                Bundle event = batch.get(i);
+                ContentValues value = new ContentValues();
+                for (String key : new String[]{"kind", "category", "package", "process", "hook", "state", "error"}) {
+                    if (event.containsKey(key)) value.put(key, event.getString(key));
+                }
+                if (event.containsKey("delta")) value.put("delta", event.getInt("delta"));
+                if (event.containsKey("targetUid")) value.put("targetUid", event.getInt("targetUid"));
+                values[i] = value;
+            }
+            synchronized (LOCK) {
+                bridgeInFlight = true;
+                bridgeStartedAt = System.currentTimeMillis();
+            }
+            Intent intent = bridgeIntent(RuntimeBridgeReceiver.ACTION_EVENTS);
+            intent.putExtra(RuntimeBridgeReceiver.EXTRA_VALUES, values);
+            ctx.sendOrderedBroadcast(intent, null, new BroadcastReceiver() {
+                @Override public void onReceive(Context context, Intent intent) {
+                    if (getResultCode() == RuntimeBridgeReceiver.RESULT_ACCEPTED) {
+                        acknowledge(batch);
+                        bridgeFailureReported = false;
+                    } else if (!bridgeFailureReported) {
+                        bridgeFailureReported = true;
+                        reportHook("Runtime.eventBridge", new IllegalStateException("delivery_failed"));
+                    }
+                    synchronized (LOCK) { bridgeInFlight = false; }
+                }
+            }, null, 0, null, null);
+        } catch (Throwable t) {
+            synchronized (LOCK) { bridgeInFlight = false; }
+            if (!bridgeFailureReported) {
+                bridgeFailureReported = true;
+                reportHook("Runtime.eventBridge", t);
+            }
+        }
+    }
+
+    private static void acknowledge(ArrayList<Bundle> batch) {
+        synchronized (LOCK) {
+            for (Bundle event : batch) {
+                if ("count".equals(event.getString("kind"))) {
+                    String key = event.getString("category") + "|" + event.getInt("targetUid");
+                    int left = COUNTS.getOrDefault(key, 0) - event.getInt("delta");
+                    if (left > 0) COUNTS.put(key, left); else COUNTS.remove(key);
+                } else {
+                    HOOKS.remove(event);
+                }
+            }
         }
     }
 }

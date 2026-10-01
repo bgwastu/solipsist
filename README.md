@@ -8,7 +8,7 @@ The existing hooks have been used on Android 14–16 (HyperOS 2.0 / 3.0 and AOSP
 
 - **Shared images:** extends MediaProvider redaction to selected identifying EXIF fields, including device model, camera owner, serial, lens, and comments.
 - **MP4-family media:** redacts selected ISO Base Media File Format boxes in MP4, MOV, 3GP, and M4A files. MP3, FLAC, Ogg/Opus, WAV, AAC streams, WebM, and other non-MP4 containers are not covered by this extra scanner. Android's own media redaction may still apply separately.
-- **Shared filenames:** presents generic names in MediaProvider and Photo Picker query results. For protected callers, the legacy `_data` path is returned as `null`; apps should open the content URI instead. The original file is not renamed.
+- **Shared filenames:** presents generic names in MediaProvider and Photo Picker query results and in image, video, and audio content-URI queries made by scoped apps, including document-provider queries. For protected callers, the legacy `_data` path is returned as `null`; apps should open the content URI instead. The original file is not renamed. Files created and uploaded entirely inside an app, including some in-app camera captures, may bypass these content-URI hooks.
 - **Device inspection:** masks selected ADB, developer-option, and accessibility results for non-exempt apps. Camera and system apps remain exempt under the module's app filter.
 
 The module also records counts of selected clipboard, account, WebView user-agent, location, and VPN API calls where it is injected. These observation hooks do not alter results.
@@ -17,7 +17,7 @@ The module also records counts of selected clipboard, account, WebView user-agen
 
 1. Install the APK from [Releases](https://github.com/bgwastu/solipsist/releases). Root and an active LSPosed-compatible framework are required.
 2. Enable Solipsist in the framework and scope it to **System Framework** (`android`), **Settings Storage** (`com.android.providers.settings`), and the installed **Media Storage** package (`com.android.providers.media.module`, `com.google.android.providers.media.module`, or `com.android.providers.media`). Restart the affected system processes.
-3. Open the Solipsist app to use the global switch and runtime status view. Changes to the switch are sent to running processes; the hooks check the updated state without a restart.
+3. Open the Solipsist app to use the global switch and runtime status view. Changes to the switch are sent to running processes; the hooks check the updated state without a restart. Install Solipsist in each Android user or work profile where scoped apps run.
 4. For app-process privacy hooks and advanced API counts, include third-party apps in the framework's scope or use its auto-include option. System-service hooks can cover their supported calls without each app being individually scoped.
 
 The status view shows the configured switch separately from reported hook installations and failures. It shows overall and per-app API category counts from the last 24 hours. It does not store queried values, clipboard contents, account names, locations, URLs, or stack traces. Counts are diagnostic: an app outside LSPosed scope cannot report app-process API calls, and unavailable hook points will be listed as failures rather than silently counted.
