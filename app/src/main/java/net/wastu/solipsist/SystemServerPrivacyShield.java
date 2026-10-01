@@ -1,7 +1,10 @@
 package net.wastu.solipsist;
 
 import android.content.Intent;
+import android.content.ContentValues;
+import android.content.Context;
 import android.os.Binder;
+import android.os.Build;
 import android.os.Bundle;
 
 import java.lang.reflect.Method;
@@ -60,7 +63,55 @@ public class SystemServerPrivacyShield {
             XC_MethodHook callHook = new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
-                    param.setObjectExtra("solipsistCallingUid", Binder.getCallingUid());
+                    int uid = Binder.getCallingUid();
+                    param.setObjectExtra("solipsistCallingUid", uid);
+                    int methodIndex = param.args.length >= 4 ? 1 : 0;
+                    if (param.args.length <= methodIndex || !(param.args[methodIndex] instanceof String)) return;
+                    String method = (String) param.args[methodIndex];
+                    if (RuntimeProvider.RELAY_CONFIG.equals(method)) {
+                        Bundle reply = new Bundle();
+                        reply.putBoolean(RuntimeProvider.ENABLED, RuntimeState.isEnabled());
+                        param.setResult(reply);
+                    } else if (RuntimeProvider.RELAY_EVENTS.equals(method)) {
+                        Bundle reply = new Bundle();
+                        try {
+                            Bundle input = (Bundle) param.args[param.args.length - 1];
+                            if (input == null || !(param.thisObject instanceof android.content.ContentProvider)) {
+                                param.setResult(reply);
+                                return;
+                            }
+                            if (Build.VERSION.SDK_INT < 33) {
+                                param.setResult(reply);
+                                return;
+                            }
+                            ContentValues[] values = input.getParcelableArray("values", ContentValues.class);
+                            if (values == null || values.length == 0 || values.length > 64) {
+                                param.setResult(reply);
+                                return;
+                            }
+                            Context context = ((android.content.ContentProvider) param.thisObject).getContext();
+                            String[] packages = context.getPackageManager().getPackagesForUid(uid);
+                            if (packages == null || packages.length == 0) {
+                                param.setResult(reply);
+                                return;
+                            }
+                            for (ContentValues value : values) {
+                                if (value == null) continue;
+                                value.put("package", packages[0]);
+                                if ("count".equals(value.getAsString("kind"))) value.put("targetUid", uid);
+                            }
+                            long token = Binder.clearCallingIdentity();
+                            try {
+                                int accepted = context.getContentResolver().bulkInsert(RuntimeProvider.EVENTS_URI, values);
+                                reply.putInt("accepted", accepted);
+                            } finally {
+                                Binder.restoreCallingIdentity(token);
+                            }
+                        } catch (Throwable t) {
+                            RuntimeState.reportHook("System.SettingsProvider.relay", t);
+                        }
+                        param.setResult(reply);
+                    }
                 }
 
                 @Override

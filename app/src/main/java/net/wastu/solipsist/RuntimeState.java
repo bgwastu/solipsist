@@ -14,6 +14,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -55,6 +56,7 @@ final class RuntimeState {
     private static volatile long providerRetryAfter;
     private static volatile long configBridgeRetryAfter;
     private static volatile long eventBridgeRetryAfter;
+    private static volatile long settingsRelayRetryAfter;
 
     private RuntimeState() {}
 
@@ -131,6 +133,8 @@ final class RuntimeState {
 
     private static void refreshConfig() {
         Context ctx = context;
+        if (ctx != null && android.os.Process.myUid() % 100000 != android.os.Process.SYSTEM_UID
+                && refreshViaSettings(ctx)) return;
         if (ctx != null && System.currentTimeMillis() >= providerRetryAfter) {
             try (Cursor cursor = ctx.getContentResolver().query(RuntimeProvider.CONFIG_URI,
                     new String[]{RuntimeProvider.ENABLED}, null, null, null)) {
@@ -150,6 +154,23 @@ final class RuntimeState {
             syncFailureReported = true;
             reportHook("Runtime.configSync", new IllegalStateException("config_unavailable"));
         }
+    }
+
+    private static boolean refreshViaSettings(Context ctx) {
+        if (System.currentTimeMillis() < settingsRelayRetryAfter) return false;
+        try {
+            Bundle reply = ctx.getContentResolver().call(Settings.Global.CONTENT_URI,
+                    RuntimeProvider.RELAY_CONFIG, null, null);
+            if (reply != null && reply.containsKey(RuntimeProvider.ENABLED)) {
+                enabled = reply.getBoolean(RuntimeProvider.ENABLED);
+                syncFailureReported = false;
+                return true;
+            }
+        } catch (Throwable ignored) {
+            // The SettingsProvider hook may not be installed on every ROM.
+        }
+        settingsRelayRetryAfter = System.currentTimeMillis() + 60000;
+        return false;
     }
 
     private static Intent bridgeIntent(String action) {
@@ -269,18 +290,8 @@ final class RuntimeState {
             for (int i = 0; i < HOOKS.size() && batch.size() < 64; i++) batch.add(HOOKS.get(i));
             if (batch.isEmpty()) return;
         }
+        ContentValues[] values = buildValues(batch);
         try {
-            ContentValues[] values = new ContentValues[batch.size()];
-            for (int i = 0; i < batch.size(); i++) {
-                Bundle event = batch.get(i);
-                ContentValues value = new ContentValues();
-                for (String key : new String[]{"kind", "category", "package", "process", "hook", "state", "error"}) {
-                    if (event.containsKey(key)) value.put(key, event.getString(key));
-                }
-                if (event.containsKey("delta")) value.put("delta", event.getInt("delta"));
-                if (event.containsKey("targetUid")) value.put("targetUid", event.getInt("targetUid"));
-                values[i] = value;
-            }
             if (System.currentTimeMillis() >= providerRetryAfter) {
                 if (ctx.getContentResolver().bulkInsert(RuntimeProvider.EVENTS_URI, values) == values.length) {
                     acknowledge(batch);
@@ -292,19 +303,23 @@ final class RuntimeState {
             // Try explicit broadcast delivery for scoped apps that cannot resolve the provider.
             providerRetryAfter = System.currentTimeMillis() + 60000;
         }
+        if (System.currentTimeMillis() >= settingsRelayRetryAfter) {
+            try {
+                Bundle input = new Bundle();
+                input.putParcelableArray("values", values);
+                Bundle reply = ctx.getContentResolver().call(Settings.Global.CONTENT_URI,
+                        RuntimeProvider.RELAY_EVENTS, null, input);
+                if (reply != null && reply.getInt("accepted") == values.length) {
+                    acknowledge(batch);
+                    return;
+                }
+            } catch (Throwable ignored) {
+                // Try the explicit receiver if SettingsProvider cannot forward this batch.
+            }
+            settingsRelayRetryAfter = System.currentTimeMillis() + 60000;
+        }
         if (System.currentTimeMillis() < eventBridgeRetryAfter) return;
         try {
-            ContentValues[] values = new ContentValues[batch.size()];
-            for (int i = 0; i < batch.size(); i++) {
-                Bundle event = batch.get(i);
-                ContentValues value = new ContentValues();
-                for (String key : new String[]{"kind", "category", "package", "process", "hook", "state", "error"}) {
-                    if (event.containsKey(key)) value.put(key, event.getString(key));
-                }
-                if (event.containsKey("delta")) value.put("delta", event.getInt("delta"));
-                if (event.containsKey("targetUid")) value.put("targetUid", event.getInt("targetUid"));
-                values[i] = value;
-            }
             synchronized (LOCK) {
                 bridgeInFlight = true;
                 bridgeStartedAt = System.currentTimeMillis();
@@ -334,6 +349,21 @@ final class RuntimeState {
                 reportHook("Runtime.eventBridge", t);
             }
         }
+    }
+
+    private static ContentValues[] buildValues(ArrayList<Bundle> batch) {
+        ContentValues[] values = new ContentValues[batch.size()];
+        for (int i = 0; i < batch.size(); i++) {
+            Bundle event = batch.get(i);
+            ContentValues value = new ContentValues();
+            for (String key : new String[]{"kind", "category", "package", "process", "hook", "state", "error"}) {
+                if (event.containsKey(key)) value.put(key, event.getString(key));
+            }
+            if (event.containsKey("delta")) value.put("delta", event.getInt("delta"));
+            if (event.containsKey("targetUid")) value.put("targetUid", event.getInt("targetUid"));
+            values[i] = value;
+        }
+        return values;
     }
 
     private static void acknowledge(ArrayList<Bundle> batch) {

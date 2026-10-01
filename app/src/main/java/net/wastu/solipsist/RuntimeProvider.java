@@ -20,6 +20,8 @@ public final class RuntimeProvider extends ContentProvider {
     static final Uri EVENTS_URI = Uri.parse("content://" + AUTHORITY + "/events");
     static final String PREFS = "module_state";
     static final String ENABLED = "enabled";
+    static final String RELAY_CONFIG = "net.wastu.solipsist.CONFIG_QUERY";
+    static final String RELAY_EVENTS = "net.wastu.solipsist.EVENT_REPORT";
     @Override
     public boolean onCreate() {
         RuntimeVisibility.grantAllAsync(getContext());
@@ -80,8 +82,12 @@ public final class RuntimeProvider extends ContentProvider {
             event.putInt("targetUid", targetUid == null ? -1 : targetUid);
             if ("count".equals(event.getString("kind")) && privilegedReporter) {
                 if (event.getInt("targetUid") >= 10000) {
-                    String[] targetPackages = context.getPackageManager().getPackagesForUid(event.getInt("targetUid"));
-                    if (targetPackages != null && targetPackages.length > 0) event.putString("package", targetPackages[0]);
+                    try {
+                        String[] targetPackages = context.getPackageManager().getPackagesForUid(event.getInt("targetUid"));
+                        if (targetPackages != null && targetPackages.length > 0) event.putString("package", targetPackages[0]);
+                    } catch (SecurityException ignored) {
+                        // A work-profile UID may be hidden from the owner's package manager.
+                    }
                 }
             }
             if (!privilegedReporter && packages != null) {
