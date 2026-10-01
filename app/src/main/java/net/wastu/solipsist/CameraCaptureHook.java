@@ -204,14 +204,16 @@ final class CameraCaptureHook {
         Capture capture = new Capture("image_" + id + ".jpg", System.currentTimeMillis());
         synchronized (LOCK) {
             CAPTURED.put(uri.toString(), capture);
+            CAPTURED.put(Uri.fromFile(file).toString(), capture);
             PATHS.put(file.getPath(), capture);
             hasCaptured = true;
             Iterator<Map.Entry<String, Capture>> iterator = CAPTURED.entrySet().iterator();
             while (iterator.hasNext()) {
                 Map.Entry<String, Capture> entry = iterator.next();
                 if (CAPTURED.size() <= MAX_CAPTURED && !expired(entry.getValue())) break;
-                PATHS.values().remove(entry.getValue());
+                Capture removed = entry.getValue();
                 iterator.remove();
+                if (!CAPTURED.containsValue(removed)) PATHS.values().remove(removed);
             }
         }
     }
