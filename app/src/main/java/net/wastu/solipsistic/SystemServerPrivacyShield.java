@@ -143,15 +143,26 @@ public class SystemServerPrivacyShield {
                     XposedBridge.log(TAG + " Successfully hooked AccessibilityManagerService.addClient");
                 }
 
-                // 2. Return empty lists for query of enabled/installed accessibility services
+                // 2. Return empty ParceledListSlice for query of enabled/installed accessibility services
                 if ("getEnabledAccessibilityServiceList".equals(m.getName())
                         || "getInstalledAccessibilityServiceList".equals(m.getName())) {
                     XposedBridge.hookMethod(m, new XC_MethodHook() {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                            int callingUid = Binder.getCallingUid();
-                            if (callingUid >= 10000) {
-                                param.setResult(Collections.emptyList());
+                            try {
+                                int callingUid = Binder.getCallingUid();
+                                if (callingUid >= 10000) {
+                                    Class<?> plsClass = XposedHelpers.findClassIfExists(
+                                        "android.content.pm.ParceledListSlice",
+                                        lpparam.classLoader
+                                    );
+                                    if (plsClass != null) {
+                                        Object emptySlice = XposedHelpers.callStaticMethod(plsClass, "emptyList");
+                                        param.setResult(emptySlice);
+                                    }
+                                }
+                            } catch (Throwable t) {
+                                XposedBridge.log(TAG + " Error cloaking " + param.method.getName() + ": " + t.getMessage());
                             }
                         }
                     });
