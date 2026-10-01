@@ -299,6 +299,7 @@ public class MainHook implements IXposedHookLoadPackage {
         // Apply Privacy Shield (USB debugging, developer options, and accessibility hiding) to target apps
         PrivacyShieldHook.init(lpparam);
         installAppMediaQueryHook();
+        CameraCaptureHook.install();
         AdvancedReadObserver.install(lpparam);
     }
 
@@ -312,8 +313,10 @@ public class MainHook implements IXposedHookLoadPackage {
                     Uri uri = (Uri) param.args[0];
                     if (!"content".equals(uri.getScheme())) return;
                     String authority = uri.getAuthority();
-                    if (authority == null || !(authority.contains("media") || authority.contains("photopicker")
-                            || authority.contains("photos") || authority.contains("documents"))) return;
+                    boolean cameraOutput = CameraCaptureHook.isCapturedUri(uri);
+                    if (authority == null || !(cameraOutput || authority.contains("media")
+                            || authority.contains("photopicker") || authority.contains("photos")
+                            || authority.contains("documents"))) return;
                     Cursor cursor = (Cursor) param.getResult();
                     if (cursor.getColumnIndex("_display_name") < 0 && cursor.getColumnIndex("title") < 0
                             && cursor.getColumnIndex("_data") < 0) return;
@@ -323,6 +326,7 @@ public class MainHook implements IXposedHookLoadPackage {
                     } catch (Throwable ignored) {
                         return;
                     }
+                    if (mime == null && cameraOutput) mime = "image/jpeg";
                     if (mime == null || !(mime.startsWith("image/") || mime.startsWith("video/")
                             || mime.startsWith("audio/"))) return;
                     RuntimeState.count("media_query");
