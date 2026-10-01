@@ -60,8 +60,8 @@ public class SystemServerPrivacyShield {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                     int callingUid = Binder.getCallingUid();
-                    if (callingUid < 10000) {
-                        return; // Allow system / root callers
+                    if (AppFilter.isExemptUid(callingUid)) {
+                        return; // Allow system and camera callers
                     }
 
                     // AOSP call signatures:
@@ -126,7 +126,7 @@ public class SystemServerPrivacyShield {
                         @Override
                         protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                             int callingUid = Binder.getCallingUid();
-                            if (callingUid >= 10000) {
+                            if (!AppFilter.isExemptUid(callingUid)) {
                                 Object result = param.getResult();
                                 if (result instanceof Long) {
                                     long val = ((Long) result).longValue();
@@ -151,7 +151,7 @@ public class SystemServerPrivacyShield {
                         protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                             try {
                                 int callingUid = Binder.getCallingUid();
-                                if (callingUid >= 10000) {
+                                if (!AppFilter.isExemptUid(callingUid)) {
                                     Class<?> plsClass = XposedHelpers.findClassIfExists(
                                         "android.content.pm.ParceledListSlice",
                                         lpparam.classLoader
@@ -188,7 +188,7 @@ public class SystemServerPrivacyShield {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                     int callingUid = Binder.getCallingUid();
-                    if (callingUid >= 10000 && param.args.length > 0 && param.args[0] instanceof Intent) {
+                    if (!AppFilter.isExemptUid(callingUid) && param.args.length > 0 && param.args[0] instanceof Intent) {
                         Intent intent = (Intent) param.args[0];
                         if (intent != null && "android.accessibilityservice.AccessibilityService".equals(intent.getAction())) {
                             param.setResult(Collections.emptyList());

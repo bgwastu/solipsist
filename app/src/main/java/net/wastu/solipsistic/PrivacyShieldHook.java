@@ -45,6 +45,9 @@ public class PrivacyShieldHook {
     ));
 
     public static void init(LoadPackageParam lpparam) {
+        if (AppFilter.isExemptPackage(lpparam.packageName, lpparam.appInfo)) {
+            return;
+        }
         XposedBridge.log(TAG + " Activating Privacy Shield for package: " + lpparam.packageName);
         hookAccessibility(lpparam);
         hookSettings(lpparam);

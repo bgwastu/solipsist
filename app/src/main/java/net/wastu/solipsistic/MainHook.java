@@ -98,7 +98,7 @@ public class MainHook implements IXposedHookLoadPackage {
                         if (param.args.length >= 4 && param.args[3] instanceof Integer) {
                             callingUid = ((Integer) param.args[3]).intValue();
                         }
-                        if (callingUid <= 10000 && callingUid != 0) return;
+                        if (AppFilter.isExemptUid(callingUid)) return;
 
                         String callingPkg = null;
                         try {
@@ -109,15 +109,8 @@ public class MainHook implements IXposedHookLoadPackage {
                             callingPkg = (String) param.args[4];
                         }
 
-                        if (callingPkg != null) {
-                            if ("com.android.photopicker".equals(callingPkg)
-                                    || "com.google.android.photopicker".equals(callingPkg)
-                                    || "com.android.providers.media.module".equals(callingPkg)
-                                    || "com.miui.gallery".equals(callingPkg)
-                                    || "com.google.android.apps.photos".equals(callingPkg)
-                                    || callingPkg.contains("gallery")) {
-                                return;
-                            }
+                        if (callingPkg != null && AppFilter.isExemptPackage(callingPkg, null)) {
+                            return;
                         }
 
                         Uri uri = (Uri) param.args[0];
@@ -189,7 +182,9 @@ public class MainHook implements IXposedHookLoadPackage {
                     protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                         int uid = (Integer) param.args[0];
                         if (uid > 10000 && uid != android.os.Process.myUid()) {
-                            param.args[2] = true; // force shouldRedact = true
+                            if (!AppFilter.isExemptUid(uid)) {
+                                param.args[2] = true; // force shouldRedact = true only for non-exempt user apps
+                            }
                         }
                     }
                 });
@@ -261,6 +256,12 @@ public class MainHook implements IXposedHookLoadPackage {
         }
 
         if ("com.android.photopicker".equals(lpparam.packageName)) {
+            return;
+        }
+
+        // Exclude camera apps and all system apps - only target third-party user apps
+        if (AppFilter.isExemptPackage(lpparam.packageName, lpparam.appInfo)) {
+            XposedBridge.log("[Solipsistic] Skipping Privacy Shield for exempt package: " + lpparam.packageName);
             return;
         }
 
