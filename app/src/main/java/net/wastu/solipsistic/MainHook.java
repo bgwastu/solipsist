@@ -63,6 +63,13 @@ public class MainHook implements IXposedHookLoadPackage {
 
     @Override
     public void handleLoadPackage(LoadPackageParam lpparam) throws Throwable {
+        if ("android".equals(lpparam.packageName)
+                || "system".equals(lpparam.packageName)
+                || "com.android.systemui".equals(lpparam.packageName)
+                || "net.wastu.solipsistic".equals(lpparam.packageName)) {
+            return;
+        }
+
         if ("com.android.providers.media.module".equals(lpparam.packageName)
                 || "com.android.providers.media".equals(lpparam.packageName)
                 || "com.google.android.providers.media.module".equals(lpparam.packageName)) {
@@ -239,7 +246,15 @@ public class MainHook implements IXposedHookLoadPackage {
             } catch (Throwable t) {
                 XposedBridge.log("[Solipsistic] Error hooking RedactionUtils.getRedactionRanges: " + t.getMessage());
             }
+            return;
         }
+
+        if ("com.android.photopicker".equals(lpparam.packageName)) {
+            return;
+        }
+
+        // Apply Privacy Shield (USB debugging, developer options, and accessibility hiding) to target apps
+        PrivacyShieldHook.init(lpparam);
     }
 
     private static Cursor wrapPickerCursor(final Cursor cursor, final Uri uri) {
