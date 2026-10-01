@@ -14,21 +14,28 @@ final class RuntimeStore extends SQLiteOpenHelper {
     private static final long DAY_MS = 24L * 60L * 60L * 1000L;
     private static final long BUCKET_MS = 5L * 60L * 1000L;
     private static final int MAX_COUNT_ROWS = 5000;
-    private static final int MAX_HOOK_ROWS = 300;
+    private static final int MAX_HOOK_ROWS = 10000;
 
     RuntimeStore(Context context) {
-        super(context, "runtime_status.db", null, 1);
+        super(context, "runtime_status.db", null, 2);
     }
 
     @Override
     public void onCreate(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE counts (bucket INTEGER NOT NULL, package TEXT NOT NULL, category TEXT NOT NULL, total INTEGER NOT NULL, PRIMARY KEY(bucket, package, category))");
-        db.execSQL("CREATE TABLE hooks (id INTEGER PRIMARY KEY AUTOINCREMENT, time INTEGER NOT NULL, package TEXT NOT NULL, process TEXT NOT NULL, hook TEXT NOT NULL, state TEXT NOT NULL, error TEXT NOT NULL)");
+        createHooks(db);
     }
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        // Version 1 has no migration.
+        if (oldVersion < 2) {
+            db.execSQL("DROP TABLE IF EXISTS hooks");
+            createHooks(db);
+        }
+    }
+
+    private static void createHooks(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE hooks (id INTEGER PRIMARY KEY AUTOINCREMENT, time INTEGER NOT NULL, package TEXT NOT NULL, process TEXT NOT NULL, hook TEXT NOT NULL, state TEXT NOT NULL, error TEXT NOT NULL, UNIQUE(package, process, hook, state, error))");
     }
 
     synchronized void record(List<Bundle> events, String callerPackage, boolean trustedSystem) {
@@ -57,7 +64,7 @@ final class RuntimeStore extends SQLiteOpenHelper {
                     String hook = safe(event.getString("hook"), 100);
                     String state = safe(event.getString("state"), 16);
                     if (hook.isEmpty() || !("installed".equals(state) || "failed".equals(state))) continue;
-                    db.execSQL("INSERT INTO hooks(time, package, process, hook, state, error) VALUES(?, ?, ?, ?, ?, ?)",
+                    db.execSQL("INSERT OR REPLACE INTO hooks(time, package, process, hook, state, error) VALUES(?, ?, ?, ?, ?, ?)",
                             new Object[]{now, pkg, safe(event.getString("process"), 100), hook, state,
                                     safe(event.getString("error"), 80)});
                 }
@@ -90,7 +97,11 @@ final class RuntimeStore extends SQLiteOpenHelper {
                 out.append("  ").append(c.getString(1)).append(": ").append(c.getLong(2)).append('\n');
             }
         }
-        out.append("\nHook failures\n");
+        out.append("\nHook reports: ");
+        try (Cursor c = db.rawQuery("SELECT state, COUNT(*) FROM hooks GROUP BY state ORDER BY state", null)) {
+            while (c.moveToNext()) out.append(c.getString(0)).append(' ').append(c.getLong(1)).append("  ");
+        }
+        out.append("\n\nHook failures\n");
         try (Cursor c = db.rawQuery("SELECT package, process, hook, error FROM hooks WHERE state = 'failed' ORDER BY id DESC LIMIT 40", null)) {
             if (c.getCount() == 0) out.append("No failures reported.\n");
             while (c.moveToNext()) {
