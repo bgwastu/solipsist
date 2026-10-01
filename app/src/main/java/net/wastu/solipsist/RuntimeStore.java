@@ -17,7 +17,7 @@ final class RuntimeStore extends SQLiteOpenHelper {
     private static final int MAX_HOOK_ROWS = 10000;
 
     RuntimeStore(Context context) {
-        super(context, "runtime_status.db", null, 2);
+        super(context, "runtime_status.db", null, 3);
     }
 
     @Override
@@ -28,14 +28,14 @@ final class RuntimeStore extends SQLiteOpenHelper {
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        if (oldVersion < 2) {
+        if (oldVersion < 3) {
             db.execSQL("DROP TABLE IF EXISTS hooks");
             createHooks(db);
         }
     }
 
     private static void createHooks(SQLiteDatabase db) {
-        db.execSQL("CREATE TABLE hooks (id INTEGER PRIMARY KEY AUTOINCREMENT, time INTEGER NOT NULL, package TEXT NOT NULL, process TEXT NOT NULL, hook TEXT NOT NULL, state TEXT NOT NULL, error TEXT NOT NULL, UNIQUE(package, process, hook, state, error))");
+        db.execSQL("CREATE TABLE hooks (id INTEGER PRIMARY KEY AUTOINCREMENT, time INTEGER NOT NULL, package TEXT NOT NULL, process TEXT NOT NULL, hook TEXT NOT NULL, state TEXT NOT NULL, error TEXT NOT NULL, UNIQUE(package, process, hook))");
     }
 
     synchronized void record(List<Bundle> events, String callerPackage, boolean trustedSystem) {

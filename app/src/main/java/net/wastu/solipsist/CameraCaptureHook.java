@@ -32,6 +32,7 @@ import java.util.WeakHashMap;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
+import de.robv.android.xposed.XposedHelpers;
 
 /** Cleans app-owned camera output before the caller receives its activity result. */
 final class CameraCaptureHook {
@@ -122,7 +123,9 @@ final class CameraCaptureHook {
         }
 
         try {
-            if (XposedBridge.hookAllMethods(Uri.class, "getLastPathSegment", new XC_MethodHook() {
+            Class<?> hierarchicalUri = XposedHelpers.findClass(
+                    "android.net.Uri$AbstractHierarchicalUri", null);
+            if (XposedBridge.hookAllMethods(hierarchicalUri, "getLastPathSegment", new XC_MethodHook() {
                 @Override protected void afterHookedMethod(MethodHookParam param) {
                     String name = capturedName((Uri) param.thisObject);
                     if (name != null) param.setResult(name);
