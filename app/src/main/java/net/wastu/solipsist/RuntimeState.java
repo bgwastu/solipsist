@@ -1,6 +1,7 @@
 package net.wastu.solipsist;
 
 import android.app.Application;
+import android.app.BroadcastOptions;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.ContentValues;
@@ -11,6 +12,8 @@ import android.database.ContentObserver;
 import android.database.Cursor;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -50,6 +53,8 @@ final class RuntimeState {
     private static long bridgeStartedAt;
     private static long lastConfigRequest;
     private static volatile long providerRetryAfter;
+    private static volatile long configBridgeRetryAfter;
+    private static volatile long eventBridgeRetryAfter;
 
     private RuntimeState() {}
 
@@ -158,10 +163,11 @@ final class RuntimeState {
         Context ctx = context;
         if (ctx == null) return false;
         long now = System.currentTimeMillis();
+        if (now < configBridgeRetryAfter) return true;
         if (now - lastConfigRequest < 10000) return true;
         lastConfigRequest = now;
         try {
-            ctx.sendOrderedBroadcast(bridgeIntent(RuntimeBridgeReceiver.ACTION_CONFIG), null,
+            sendBridge(ctx, bridgeIntent(RuntimeBridgeReceiver.ACTION_CONFIG),
                     new BroadcastReceiver() {
                         @Override public void onReceive(Context context, Intent intent) {
                             int result = getResultCode();
@@ -169,16 +175,29 @@ final class RuntimeState {
                                     || result == RuntimeBridgeReceiver.RESULT_DISABLED) {
                                 enabled = result == RuntimeBridgeReceiver.RESULT_ENABLED;
                                 syncFailureReported = false;
-                            } else if (!readXposedFallback() && !syncFailureReported) {
-                                syncFailureReported = true;
-                                reportHook("Runtime.configSync", new IllegalStateException("bridge_unavailable"));
+                            } else {
+                                configBridgeRetryAfter = System.currentTimeMillis() + 60000;
+                                if (!readXposedFallback() && !syncFailureReported) {
+                                    syncFailureReported = true;
+                                    reportHook("Runtime.configSync", new IllegalStateException("bridge_unavailable"));
+                                }
                             }
                         }
-                    }, null, 0, null, null);
+                    });
             return true;
         } catch (Throwable t) {
             reportHook("Runtime.configBridge", t);
             return false;
+        }
+    }
+
+    private static void sendBridge(Context ctx, Intent intent, BroadcastReceiver callback) {
+        Handler main = new Handler(Looper.getMainLooper());
+        if (Build.VERSION.SDK_INT >= 34) {
+            Bundle options = BroadcastOptions.makeBasic().setShareIdentityEnabled(true).toBundle();
+            ctx.sendOrderedBroadcast(intent, null, options, callback, main, 0, null, null);
+        } else {
+            ctx.sendOrderedBroadcast(intent, null, callback, main, 0, null, null);
         }
     }
 
@@ -273,6 +292,7 @@ final class RuntimeState {
             // Try explicit broadcast delivery for scoped apps that cannot resolve the provider.
             providerRetryAfter = System.currentTimeMillis() + 60000;
         }
+        if (System.currentTimeMillis() < eventBridgeRetryAfter) return;
         try {
             ContentValues[] values = new ContentValues[batch.size()];
             for (int i = 0; i < batch.size(); i++) {
@@ -291,7 +311,7 @@ final class RuntimeState {
             }
             Intent intent = bridgeIntent(RuntimeBridgeReceiver.ACTION_EVENTS);
             intent.putExtra(RuntimeBridgeReceiver.EXTRA_VALUES, values);
-            ctx.sendOrderedBroadcast(intent, null, new BroadcastReceiver() {
+            sendBridge(ctx, intent, new BroadcastReceiver() {
                 @Override public void onReceive(Context context, Intent intent) {
                     if (getResultCode() == RuntimeBridgeReceiver.RESULT_ACCEPTED) {
                         acknowledge(batch);
@@ -300,11 +320,15 @@ final class RuntimeState {
                         bridgeFailureReported = true;
                         reportHook("Runtime.eventBridge", new IllegalStateException("delivery_failed"));
                     }
+                    if (getResultCode() != RuntimeBridgeReceiver.RESULT_ACCEPTED) {
+                        eventBridgeRetryAfter = System.currentTimeMillis() + 60000;
+                    }
                     synchronized (LOCK) { bridgeInFlight = false; }
                 }
-            }, null, 0, null, null);
+            });
         } catch (Throwable t) {
             synchronized (LOCK) { bridgeInFlight = false; }
+            eventBridgeRetryAfter = System.currentTimeMillis() + 60000;
             if (!bridgeFailureReported) {
                 bridgeFailureReported = true;
                 reportHook("Runtime.eventBridge", t);

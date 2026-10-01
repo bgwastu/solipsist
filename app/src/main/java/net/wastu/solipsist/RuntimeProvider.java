@@ -22,6 +22,7 @@ public final class RuntimeProvider extends ContentProvider {
     static final String ENABLED = "enabled";
     @Override
     public boolean onCreate() {
+        RuntimeVisibility.grantAllAsync(getContext());
         return true;
     }
 
