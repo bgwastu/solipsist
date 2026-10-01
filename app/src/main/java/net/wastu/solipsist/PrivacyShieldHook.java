@@ -1,4 +1,4 @@
-package net.wastu.solipsistic;
+package net.wastu.solipsist;
 
 import android.content.ContentResolver;
 import android.content.Intent;
@@ -14,7 +14,6 @@ import java.util.List;
 import java.util.Set;
 
 import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XC_MethodReplacement;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
@@ -26,7 +25,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
  */
 public class PrivacyShieldHook {
 
-    private static final String TAG = "[Solipsistic-Shield]";
+    private static final String TAG = "[Solipsist-Shield]";
 
     // Setting keys to cloak as "0"
     private static final Set<String> ZERO_SETTINGS = new HashSet<String>(Arrays.asList(
@@ -61,16 +60,33 @@ public class PrivacyShieldHook {
 
             // 1. Force isEnabled() and isTouchExplorationEnabled() to always return false
             try {
-                XposedHelpers.findAndHookMethod(amClass, "isEnabled", XC_MethodReplacement.returnConstant(false));
-                XposedHelpers.findAndHookMethod(amClass, "isTouchExplorationEnabled", XC_MethodReplacement.returnConstant(false));
+                XC_MethodHook disabledState = new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam param) {
+                        if (RuntimeState.isEnabled()) {
+                            RuntimeState.count("accessibility");
+                            param.setResult(false);
+                        }
+                    }
+                };
+                XposedHelpers.findAndHookMethod(amClass, "isEnabled", disabledState);
+                XposedHelpers.findAndHookMethod(amClass, "isTouchExplorationEnabled", disabledState);
                 XposedBridge.log(TAG + " Hooked AccessibilityManager.isEnabled & isTouchExplorationEnabled");
+                RuntimeState.reportInstalled("Shield.AccessibilityManager.state");
             } catch (Throwable t) {
                 XposedBridge.log(TAG + " Error hooking isEnabled: " + t.getMessage());
+                RuntimeState.reportHook("Shield.AccessibilityManager.state", t);
             }
 
             // 2. Return empty lists for any query of active/installed accessibility services
             try {
-                XC_MethodReplacement emptyListReplacement = XC_MethodReplacement.returnConstant(Collections.emptyList());
+                XC_MethodHook emptyListReplacement = new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam param) {
+                        if (RuntimeState.isEnabled()) {
+                            RuntimeState.count("accessibility");
+                            param.setResult(Collections.emptyList());
+                        }
+                    }
+                };
                 for (Method m : amClass.getDeclaredMethods()) {
                     String name = m.getName();
                     if ("getEnabledAccessibilityServiceList".equals(name)
@@ -80,8 +96,10 @@ public class PrivacyShieldHook {
                         XposedBridge.log(TAG + " Hooked AccessibilityManager." + name);
                     }
                 }
+                RuntimeState.reportInstalled("Shield.AccessibilityManager.lists");
             } catch (Throwable t) {
                 XposedBridge.log(TAG + " Error hooking getEnabledAccessibilityServiceList: " + t.getMessage());
+                RuntimeState.reportHook("Shield.AccessibilityManager.lists", t);
             }
 
             // 3. Keep internal fields mIsEnabled & mIsTouchExplorationEnabled permanently false
@@ -89,6 +107,7 @@ public class PrivacyShieldHook {
                 XposedBridge.hookAllConstructors(amClass, new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        if (!RuntimeState.isEnabled()) return;
                         try {
                             XposedHelpers.setBooleanField(param.thisObject, "mIsEnabled", false);
                             XposedHelpers.setBooleanField(param.thisObject, "mIsTouchExplorationEnabled", false);
@@ -102,6 +121,7 @@ public class PrivacyShieldHook {
                         XposedBridge.hookMethod(m, new XC_MethodHook() {
                             @Override
                             protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                                if (!RuntimeState.isEnabled()) return;
                                 if (param.args.length > 0 && param.args[0] instanceof Integer) {
                                     int flags = ((Integer) param.args[0]).intValue();
                                     // Clear STATE_FLAG_ACCESSIBILITY_ENABLED (0x01) and STATE_FLAG_TOUCH_EXPLORATION_ENABLED (0x02)
@@ -112,8 +132,10 @@ public class PrivacyShieldHook {
                         });
                     }
                 }
+                RuntimeState.reportInstalled("Shield.AccessibilityManager.stateUpdates");
             } catch (Throwable t) {
                 XposedBridge.log(TAG + " Error hooking AccessibilityManager state updates: " + t.getMessage());
+                RuntimeState.reportHook("Shield.AccessibilityManager.stateUpdates", t);
             }
 
             // 4. Dummy listeners
@@ -123,13 +145,19 @@ public class PrivacyShieldHook {
                     if ("addAccessibilityStateChangeListener".equals(name)
                             || "addTouchExplorationStateChangeListener".equals(name)
                             || "addHighTextContrastStateChangeListener".equals(name)) {
-                        XposedBridge.hookMethod(m, XC_MethodReplacement.returnConstant(true));
+                        XposedBridge.hookMethod(m, new XC_MethodHook() {
+                            @Override protected void beforeHookedMethod(MethodHookParam param) {
+                                if (RuntimeState.isEnabled()) param.setResult(true);
+                            }
+                        });
                     }
                 }
-            } catch (Throwable ignored) {}
+                RuntimeState.reportInstalled("Shield.AccessibilityManager.listeners");
+            } catch (Throwable t) { RuntimeState.reportHook("Shield.AccessibilityManager.listeners", t); }
 
         } catch (Throwable t) {
             XposedBridge.log(TAG + " AccessibilityManager class not found or error: " + t.getMessage());
+            RuntimeState.reportHook("Shield.AccessibilityManager", t);
         }
     }
 
@@ -146,11 +174,14 @@ public class PrivacyShieldHook {
                 new XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        if (!RuntimeState.isEnabled()) return;
                         String name = (String) param.args[1];
                         if (name != null) {
                             if (ZERO_SETTINGS.contains(name)) {
+                                RuntimeState.count("settings");
                                 param.setResult("0");
                             } else if (EMPTY_SETTINGS.contains(name)) {
+                                RuntimeState.count("settings");
                                 param.setResult("");
                             }
                         }
@@ -158,19 +189,24 @@ public class PrivacyShieldHook {
                 }
             );
             XposedBridge.log(TAG + " Hooked Settings$NameValueCache.getStringForUser");
+            RuntimeState.reportInstalled("Shield.Settings.NameValueCache");
         } catch (Throwable t) {
             XposedBridge.log(TAG + " Could not hook NameValueCache: " + t.getMessage());
+            RuntimeState.reportHook("Shield.Settings.NameValueCache", t);
         }
 
         // B. Direct Settings.Global & Settings.Secure getStringForUser fallback
         XC_MethodHook settingsStringHook = new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                if (!RuntimeState.isEnabled()) return;
                 String name = (String) param.args[1];
                 if (name != null) {
                     if (ZERO_SETTINGS.contains(name)) {
+                        RuntimeState.count("settings");
                         param.setResult("0");
                     } else if (EMPTY_SETTINGS.contains(name)) {
+                        RuntimeState.count("settings");
                         param.setResult("");
                     }
                 }
@@ -187,7 +223,8 @@ public class PrivacyShieldHook {
                 int.class,
                 settingsStringHook
             );
-        } catch (Throwable ignored) {}
+            RuntimeState.reportInstalled("Shield.Settings.Global.getStringForUser");
+        } catch (Throwable t) { RuntimeState.reportHook("Shield.Settings.Global.getStringForUser", t); }
 
         try {
             XposedHelpers.findAndHookMethod(
@@ -199,14 +236,17 @@ public class PrivacyShieldHook {
                 int.class,
                 settingsStringHook
             );
-        } catch (Throwable ignored) {}
+            RuntimeState.reportInstalled("Shield.Settings.Secure.getStringForUser");
+        } catch (Throwable t) { RuntimeState.reportHook("Shield.Settings.Secure.getStringForUser", t); }
 
         // C. Direct Settings.Global & Settings.Secure getInt hooks
         XC_MethodHook getIntHook = new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                if (!RuntimeState.isEnabled()) return;
                 String name = (String) param.args[1];
                 if (name != null && ZERO_SETTINGS.contains(name)) {
+                    RuntimeState.count("settings");
                     param.setResult(0);
                 }
             }
@@ -214,16 +254,20 @@ public class PrivacyShieldHook {
 
         try {
             XposedHelpers.findAndHookMethod("android.provider.Settings$Global", lpparam.classLoader, "getInt", ContentResolver.class, String.class, int.class, getIntHook);
-        } catch (Throwable ignored) {}
+            RuntimeState.reportInstalled("Shield.Settings.Global.getIntDefault");
+        } catch (Throwable t) { RuntimeState.reportHook("Shield.Settings.Global.getIntDefault", t); }
         try {
             XposedHelpers.findAndHookMethod("android.provider.Settings$Global", lpparam.classLoader, "getInt", ContentResolver.class, String.class, getIntHook);
-        } catch (Throwable ignored) {}
+            RuntimeState.reportInstalled("Shield.Settings.Global.getInt");
+        } catch (Throwable t) { RuntimeState.reportHook("Shield.Settings.Global.getInt", t); }
         try {
             XposedHelpers.findAndHookMethod("android.provider.Settings$Secure", lpparam.classLoader, "getInt", ContentResolver.class, String.class, int.class, getIntHook);
-        } catch (Throwable ignored) {}
+            RuntimeState.reportInstalled("Shield.Settings.Secure.getIntDefault");
+        } catch (Throwable t) { RuntimeState.reportHook("Shield.Settings.Secure.getIntDefault", t); }
         try {
             XposedHelpers.findAndHookMethod("android.provider.Settings$Secure", lpparam.classLoader, "getInt", ContentResolver.class, String.class, getIntHook);
-        } catch (Throwable ignored) {}
+            RuntimeState.reportInstalled("Shield.Settings.Secure.getInt");
+        } catch (Throwable t) { RuntimeState.reportHook("Shield.Settings.Secure.getInt", t); }
 
         // D. ContentResolver.call interception for Settings IPC
         try {
@@ -237,14 +281,17 @@ public class PrivacyShieldHook {
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        if (!RuntimeState.isEnabled()) return;
                         String arg = (String) param.args[2];
                         if (arg != null) {
                             if (ZERO_SETTINGS.contains(arg)) {
+                                RuntimeState.count("settings");
                                 Bundle b = (Bundle) param.getResult();
                                 if (b == null) b = new Bundle();
                                 b.putString("value", "0");
                                 param.setResult(b);
                             } else if (EMPTY_SETTINGS.contains(arg)) {
+                                RuntimeState.count("settings");
                                 Bundle b = (Bundle) param.getResult();
                                 if (b == null) b = new Bundle();
                                 b.putString("value", "");
@@ -255,8 +302,10 @@ public class PrivacyShieldHook {
                 }
             );
             XposedBridge.log(TAG + " Hooked ContentResolver.call for settings");
+            RuntimeState.reportInstalled("Shield.Settings.ContentResolver.call");
         } catch (Throwable t) {
             XposedBridge.log(TAG + " Could not hook ContentResolver.call: " + t.getMessage());
+            RuntimeState.reportHook("Shield.Settings.ContentResolver.call", t);
         }
     }
 
@@ -267,26 +316,33 @@ public class PrivacyShieldHook {
             XC_MethodHook propGetHook = new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                    if (!RuntimeState.isEnabled()) return;
                     String key = (String) param.args[0];
                     if (key == null) return;
                     if ("ro.debuggable".equals(key)) {
+                        RuntimeState.count("system_property");
                         param.setResult("0");
                     } else if ("ro.secure".equals(key)) {
+                        RuntimeState.count("system_property");
                         param.setResult("1");
                     } else if ("init.svc.adbd".equals(key)) {
+                        RuntimeState.count("system_property");
                         param.setResult("stopped");
                     } else if ("service.adb.tcp.port".equals(key)) {
+                        RuntimeState.count("system_property");
                         param.setResult("-1");
                     }
                 }
 
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                    if (!RuntimeState.isEnabled()) return;
                     String key = (String) param.args[0];
                     if (key == null) return;
                     if ("sys.usb.config".equals(key) || "sys.usb.state".equals(key) || "persist.sys.usb.config".equals(key)) {
                         String val = (String) param.getResult();
                         if (val != null && val.contains("adb")) {
+                            RuntimeState.count("system_property");
                             param.setResult(stripAdbFromUsbConfig(val));
                         }
                     }
@@ -296,12 +352,16 @@ public class PrivacyShieldHook {
             XC_MethodHook propGetIntHook = new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                    if (!RuntimeState.isEnabled()) return;
                     String key = (String) param.args[0];
                     if ("ro.debuggable".equals(key)) {
+                        RuntimeState.count("system_property");
                         param.setResult(0);
                     } else if ("ro.secure".equals(key)) {
+                        RuntimeState.count("system_property");
                         param.setResult(1);
                     } else if ("service.adb.tcp.port".equals(key)) {
+                        RuntimeState.count("system_property");
                         param.setResult(-1);
                     }
                 }
@@ -310,10 +370,13 @@ public class PrivacyShieldHook {
             XC_MethodHook propGetBooleanHook = new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                    if (!RuntimeState.isEnabled()) return;
                     String key = (String) param.args[0];
                     if ("ro.debuggable".equals(key)) {
+                        RuntimeState.count("system_property");
                         param.setResult(false);
                     } else if ("ro.secure".equals(key)) {
+                        RuntimeState.count("system_property");
                         param.setResult(true);
                     }
                 }
@@ -333,8 +396,10 @@ public class PrivacyShieldHook {
                 }
             }
             XposedBridge.log(TAG + " Hooked SystemProperties for adb/debug properties");
+            RuntimeState.reportInstalled("Shield.SystemProperties");
         } catch (Throwable t) {
             XposedBridge.log(TAG + " Error hooking SystemProperties: " + t.getMessage());
+            RuntimeState.reportHook("Shield.SystemProperties", t);
         }
     }
 
@@ -344,10 +409,12 @@ public class PrivacyShieldHook {
             XC_MethodHook queryHook = new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                    if (!RuntimeState.isEnabled()) return;
                     Intent intent = (Intent) param.args[0];
                     if (intent != null) {
                         String action = intent.getAction();
                         if ("android.accessibilityservice.AccessibilityService".equals(action)) {
+                            RuntimeState.count("accessibility");
                             param.setResult(Collections.emptyList());
                         }
                     }
@@ -361,8 +428,10 @@ public class PrivacyShieldHook {
                 }
             }
             XposedBridge.log(TAG + " Hooked ApplicationPackageManager.queryIntentServices for AccessibilityService");
+            RuntimeState.reportInstalled("Shield.PackageManager.queryIntentServices");
         } catch (Throwable t) {
             XposedBridge.log(TAG + " Error hooking ApplicationPackageManager: " + t.getMessage());
+            RuntimeState.reportHook("Shield.PackageManager.queryIntentServices", t);
         }
     }
 

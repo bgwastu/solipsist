@@ -11,11 +11,11 @@ plugins {
 }
 
 android {
-    namespace = "net.wastu.solipsistic"
+    namespace = "net.wastu.solipsist"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "net.wastu.solipsistic"
+        applicationId = "net.wastu.solipsist"
         minSdk = 26
         targetSdk = 34
         versionCode = gitVersionCode.get()
@@ -43,9 +43,7 @@ android {
 
     buildTypes {
         release {
-            signingConfigs.findByName("release")?.let { signingConfig = it } ?: run {
-                signingConfig = signingConfigs.getByName("debug")
-            }
+            signingConfig = signingConfigs.findByName("release")
             isMinifyEnabled = false
         }
     }

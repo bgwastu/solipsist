@@ -1,4 +1,4 @@
-package net.wastu.solipsistic;
+package net.wastu.solipsist;
 
 import android.content.pm.ApplicationInfo;
 import android.os.Binder;
@@ -10,11 +10,11 @@ import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 
 /**
- * Filter to exempt system apps and camera apps from Solipsistic's cloaking and media redaction,
- * ensuring Solipsistic applies ONLY to third-party user apps.
+ * Filter to exempt system apps and camera apps from Solipsist's cloaking and media redaction,
+ * ensuring Solipsist applies ONLY to third-party user apps.
  */
 public class AppFilter {
-    private static final String TAG = "[Solipsistic-Filter]";
+    private static final String TAG = "[Solipsist-Filter]";
 
     // Cache UID -> exempt status
     private static final ConcurrentHashMap<Integer, Boolean> UID_EXEMPT_CACHE = new ConcurrentHashMap<>();
@@ -59,7 +59,7 @@ public class AppFilter {
     }
 
     /**
-     * Checks whether a package (and its ApplicationInfo, if available) should be exempt from Solipsistic.
+     * Checks whether a package (and its ApplicationInfo, if available) should be exempt from Solipsist.
      * Exempt if:
      * 1. It is a camera app.
      * 2. It is a system app (or framework/system component/OEM preloaded app).
@@ -75,7 +75,7 @@ public class AppFilter {
         // 1. Core system and module packages
         if ("android".equals(packageName)
                 || "system".equals(packageName)
-                || "net.wastu.solipsistic".equals(packageName)
+                || "net.wastu.solipsist".equals(packageName)
                 || "com.android.systemui".equals(packageName)
                 || "com.android.providers.settings".equals(packageName)
                 || "com.android.providers.media".equals(packageName)
@@ -129,7 +129,7 @@ public class AppFilter {
     }
 
     /**
-     * Checks whether a UID should be exempt from Solipsistic.
+     * Checks whether a UID should be exempt from Solipsist.
      * Exempt if:
      * 1. UID is root (0) or system UIDs (appId < 10000).
      * 2. Any package associated with this UID is a system app or a camera app.

@@ -1,4 +1,4 @@
-package net.wastu.solipsistic;
+package net.wastu.solipsist;
 
 import android.content.Intent;
 import android.os.Binder;
@@ -8,6 +8,7 @@ import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import de.robv.android.xposed.XC_MethodHook;
@@ -23,7 +24,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
  */
 public class SystemServerPrivacyShield {
 
-    private static final String TAG = "[Solipsistic-SysServer]";
+    private static final String TAG = "[Solipsist-SysServer]";
 
     private static final Set<String> ZERO_SETTINGS = new HashSet<String>(Arrays.asList(
         "adb_enabled",
@@ -53,13 +54,23 @@ public class SystemServerPrivacyShield {
                 lpparam.classLoader
             );
             if (spClass == null) {
+                RuntimeState.reportHook("System.SettingsProvider.call", new ClassNotFoundException("SettingsProvider"));
                 return;
             }
 
             XC_MethodHook callHook = new XC_MethodHook() {
                 @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    param.setObjectExtra("solipsistCallingUid", Binder.getCallingUid());
+                }
+
+                @Override
                 protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                    int callingUid = Binder.getCallingUid();
+                    if (param.thisObject instanceof android.content.ContentProvider) {
+                        RuntimeState.attachContext(((android.content.ContentProvider) param.thisObject).getContext());
+                    }
+                    if (!RuntimeState.isEnabled()) return;
+                    int callingUid = (Integer) param.getObjectExtra("solipsistCallingUid");
                     if (AppFilter.isExemptUid(callingUid)) {
                         return; // Allow system and camera callers
                     }
@@ -82,12 +93,14 @@ public class SystemServerPrivacyShield {
 
                     if (method != null && method.startsWith("GET_") && request != null) {
                         if (ZERO_SETTINGS.contains(request)) {
+                            RuntimeState.count("settings", callingUid);
                             Bundle b = (Bundle) param.getResult();
                             if (b == null) b = new Bundle();
                             b.putString("value", "0");
                             param.setResult(b);
                             XposedBridge.log(TAG + " Cloaked setting " + request + " -> 0 for UID " + callingUid);
                         } else if (EMPTY_SETTINGS.contains(request)) {
+                            RuntimeState.count("settings", callingUid);
                             Bundle b = (Bundle) param.getResult();
                             if (b == null) b = new Bundle();
                             b.putString("value", "");
@@ -98,14 +111,19 @@ public class SystemServerPrivacyShield {
                 }
             };
 
+            int installed = 0;
             for (Method m : spClass.getDeclaredMethods()) {
                 if ("call".equals(m.getName())) {
                     XposedBridge.hookMethod(m, callHook);
+                    installed++;
                     XposedBridge.log(TAG + " Successfully hooked SettingsProvider.call (" + m.getParameterCount() + " params)");
+                    RuntimeState.reportInstalled("System.SettingsProvider.call");
                 }
             }
+            if (installed == 0) RuntimeState.reportHook("System.SettingsProvider.call", new NoSuchMethodException("call"));
         } catch (Throwable t) {
             XposedBridge.log(TAG + " Error hooking SettingsProvider: " + t.getMessage());
+            RuntimeState.reportHook("System.SettingsProvider.call", t);
         }
     }
 
@@ -116,6 +134,7 @@ public class SystemServerPrivacyShield {
                 lpparam.classLoader
             );
             if (amsClass == null) {
+                RuntimeState.reportHook("System.AccessibilityManagerService", new ClassNotFoundException("AccessibilityManagerService"));
                 return;
             }
 
@@ -124,9 +143,16 @@ public class SystemServerPrivacyShield {
                 if ("addClient".equals(m.getName())) {
                     XposedBridge.hookMethod(m, new XC_MethodHook() {
                         @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            param.setObjectExtra("solipsistCallingUid", Binder.getCallingUid());
+                        }
+
+                        @Override
                         protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                            int callingUid = Binder.getCallingUid();
+                            if (!RuntimeState.isEnabled()) return;
+                            int callingUid = (Integer) param.getObjectExtra("solipsistCallingUid");
                             if (!AppFilter.isExemptUid(callingUid)) {
+                                RuntimeState.count("accessibility", callingUid);
                                 Object result = param.getResult();
                                 if (result instanceof Long) {
                                     long val = ((Long) result).longValue();
@@ -141,6 +167,7 @@ public class SystemServerPrivacyShield {
                         }
                     });
                     XposedBridge.log(TAG + " Successfully hooked AccessibilityManagerService.addClient");
+                    RuntimeState.reportInstalled("System.AccessibilityManagerService.addClient");
                 }
 
                 // 2. Return empty ParceledListSlice for query of enabled/installed accessibility services
@@ -149,28 +176,35 @@ public class SystemServerPrivacyShield {
                     XposedBridge.hookMethod(m, new XC_MethodHook() {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                            if (!RuntimeState.isEnabled()) return;
                             try {
                                 int callingUid = Binder.getCallingUid();
                                 if (!AppFilter.isExemptUid(callingUid)) {
+                                    RuntimeState.count("accessibility", callingUid);
                                     Class<?> plsClass = XposedHelpers.findClassIfExists(
                                         "android.content.pm.ParceledListSlice",
                                         lpparam.classLoader
                                     );
-                                    if (plsClass != null) {
+                                    if (List.class.isAssignableFrom(((Method) param.method).getReturnType())) {
+                                        param.setResult(Collections.emptyList());
+                                    } else if (plsClass != null && plsClass.isAssignableFrom(((Method) param.method).getReturnType())) {
                                         Object emptySlice = XposedHelpers.callStaticMethod(plsClass, "emptyList");
                                         param.setResult(emptySlice);
                                     }
                                 }
                             } catch (Throwable t) {
                                 XposedBridge.log(TAG + " Error cloaking " + param.method.getName() + ": " + t.getMessage());
+                                RuntimeState.reportHook("System.AccessibilityManagerService." + param.method.getName(), t);
                             }
                         }
                     });
                     XposedBridge.log(TAG + " Successfully hooked AccessibilityManagerService." + m.getName());
+                    RuntimeState.reportInstalled("System.AccessibilityManagerService." + m.getName());
                 }
             }
         } catch (Throwable t) {
             XposedBridge.log(TAG + " Error hooking AccessibilityManagerService: " + t.getMessage());
+            RuntimeState.reportHook("System.AccessibilityManagerService", t);
         }
     }
 
@@ -181,30 +215,46 @@ public class SystemServerPrivacyShield {
                 lpparam.classLoader
             );
             if (ceClass == null) {
+                RuntimeState.reportHook("System.ComputerEngine", new ClassNotFoundException("ComputerEngine"));
                 return;
             }
 
             XC_MethodHook queryServicesHook = new XC_MethodHook() {
                 @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    param.setObjectExtra("solipsistCallingUid", Binder.getCallingUid());
+                }
+
+                @Override
                 protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                    int callingUid = Binder.getCallingUid();
+                    if (!RuntimeState.isEnabled()) return;
+                    int callingUid = (Integer) param.getObjectExtra("solipsistCallingUid");
                     if (!AppFilter.isExemptUid(callingUid) && param.args.length > 0 && param.args[0] instanceof Intent) {
                         Intent intent = (Intent) param.args[0];
                         if (intent != null && "android.accessibilityservice.AccessibilityService".equals(intent.getAction())) {
+                            RuntimeState.count("accessibility", callingUid);
                             param.setResult(Collections.emptyList());
                         }
                     }
                 }
             };
 
+            int installed = 0;
             for (Method m : ceClass.getDeclaredMethods()) {
                 if ("queryIntentServicesInternal".equals(m.getName())) {
                     XposedBridge.hookMethod(m, queryServicesHook);
+                    installed++;
                 }
             }
-            XposedBridge.log(TAG + " Successfully hooked ComputerEngine.queryIntentServicesInternal for AccessibilityService");
+            if (installed > 0) {
+                XposedBridge.log(TAG + " Successfully hooked ComputerEngine.queryIntentServicesInternal for AccessibilityService");
+                RuntimeState.reportInstalled("System.ComputerEngine.queryIntentServicesInternal");
+            } else {
+                RuntimeState.reportHook("System.ComputerEngine.queryIntentServicesInternal", new NoSuchMethodException("queryIntentServicesInternal"));
+            }
         } catch (Throwable t) {
             XposedBridge.log(TAG + " Error hooking ComputerEngine: " + t.getMessage());
+            RuntimeState.reportHook("System.ComputerEngine.queryIntentServicesInternal", t);
         }
     }
 }

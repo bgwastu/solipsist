@@ -37,18 +37,17 @@ jobs:
           ANDROID_KEYSTORE_ALIAS: ${{ secrets.ANDROID_KEYSTORE_ALIAS }}
         run: |
           set -euo pipefail
-          if [ -n "${ANDROID_KEYSTORE_BASE64:-}" ] && [ -n "${ANDROID_KEYSTORE_PASSWORD:-}" ] && [ -n "${ANDROID_KEYSTORE_ALIAS:-}" ]; then
-            keystore="$RUNNER_TEMP/release.keystore"
-            trap 'rm -f "$keystore"' EXIT
-            umask 077
-            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
-            ANDROID_KEYSTORE_FILE="$keystore" ./gradlew assembleRelease --stacktrace
-          else
-            ./gradlew assembleRelease
-          fi
+          : "${ANDROID_KEYSTORE_BASE64:?Release keystore secret is required}"
+          : "${ANDROID_KEYSTORE_PASSWORD:?Release keystore password is required}"
+          : "${ANDROID_KEYSTORE_ALIAS:?Release key alias is required}"
+          keystore="$RUNNER_TEMP/release.keystore"
+          trap 'rm -f "$keystore"' EXIT
+          umask 077
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          ANDROID_KEYSTORE_FILE="$keystore" ./gradlew assembleRelease --warning-mode all
 
       - name: Prepare APK
-        run: cp app/build/outputs/apk/release/app-release.apk Solipsistic.apk
+        run: cp app/build/outputs/apk/release/app-release.apk Solipsist.apk
 
       - name: Determine Tag and Release Name
         id: release_info
@@ -59,7 +58,7 @@ jobs:
           else
             SHORT_SHA=$(git rev-parse --short HEAD)
             TAG_NAME="commit-${SHORT_SHA}"
-            RELEASE_NAME="Solipsistic (${SHORT_SHA})"
+            RELEASE_NAME="Solipsist (${SHORT_SHA})"
           fi
           echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
           echo "release_name=${RELEASE_NAME}" >> $GITHUB_OUTPUT
@@ -69,6 +68,6 @@ jobs:
         with:
           tag_name: ${{ steps.release_info.outputs.tag_name }}
           name: ${{ steps.release_info.outputs.release_name }}
-          files: Solipsistic.apk
+          files: Solipsist.apk
           generate_release_notes: true
           make_latest: true

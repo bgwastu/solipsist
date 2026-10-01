@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Solipsistic"
+rootProject.name = "Solipsist"
 include(":app")
