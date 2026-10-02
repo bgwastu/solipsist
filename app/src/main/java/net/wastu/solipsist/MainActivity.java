@@ -5,6 +5,7 @@ import android.os.Bundle;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.View;
+import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -77,6 +78,12 @@ public final class MainActivity extends AppCompatActivity {
         setStat(R.id.stat_apps, R.string.stat_apps);
         setStat(R.id.stat_checks, R.string.stat_checks);
         setStat(R.id.stat_issues, R.string.stat_issues);
+        setCoverage(R.id.coverage_media_row, R.drawable.mi_media,
+                R.string.coverage_media, R.string.coverage_media_desc);
+        setCoverage(R.id.coverage_device_row, R.drawable.mi_device,
+                R.string.coverage_device, R.string.coverage_device_desc);
+        setCoverage(R.id.coverage_vpn_row, R.drawable.mi_vpn,
+                R.string.coverage_vpn, R.string.coverage_vpn_desc);
 
         adapter = new ActivityAdapter(this, this::showEvent);
         RecyclerView list = findViewById(R.id.activity_list);
@@ -150,10 +157,34 @@ public final class MainActivity extends AppCompatActivity {
         ((TextView) card.findViewById(R.id.stat_label)).setText(label);
     }
 
+    private void setCoverage(int rowId, int icon, int label, int description) {
+        View row = findViewById(rowId);
+        ((ImageView) row.findViewById(R.id.coverage_icon)).setImageResource(icon);
+        ((TextView) row.findViewById(R.id.coverage_label)).setText(label);
+        ((TextView) row.findViewById(R.id.coverage_desc)).setText(description);
+    }
+
     private void setStatValue(int cardId, long value) {
         View card = findViewById(cardId);
-        ((TextView) card.findViewById(R.id.stat_value)).setText(
-                String.format(Locale.getDefault(), "%,d", value));
+        TextView count = card.findViewById(R.id.stat_value);
+        count.setText(compactCount(value));
+        count.setContentDescription(String.format(Locale.getDefault(), "%,d", value));
+    }
+
+    private String compactCount(long value) {
+        if (value >= 1_000_000_000L) {
+            return String.format(Locale.getDefault(), "%.1fB", value / 1_000_000_000.0);
+        }
+        if (value >= 1_000_000L) {
+            return String.format(Locale.getDefault(), "%.1fM", value / 1_000_000.0);
+        }
+        if (value >= 100_000L) {
+            return String.format(Locale.getDefault(), "%.0fK", value / 1_000.0);
+        }
+        if (value >= 1_000L) {
+            return String.format(Locale.getDefault(), "%.1fK", value / 1_000.0);
+        }
+        return String.format(Locale.getDefault(), "%,d", value);
     }
 
     private void refresh() {
