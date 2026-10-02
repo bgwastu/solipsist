@@ -123,14 +123,25 @@ public class MainHook implements IXposedHookLoadPackage {
         if ("net.wastu.solipsist".equals(lpparam.packageName)) {
             return;
         }
+        boolean systemServer = "android".equals(lpparam.packageName)
+                || "system".equals(lpparam.packageName);
+        boolean settingsProvider = "com.android.providers.settings".equals(lpparam.packageName);
+        boolean mediaProvider = "com.android.providers.media.module".equals(lpparam.packageName)
+                || "com.android.providers.media".equals(lpparam.packageName)
+                || "com.google.android.providers.media.module".equals(lpparam.packageName);
+        // Exempt apps do not install privacy hooks and need no cross-process status relay.
+        if (!systemServer && !settingsProvider && !mediaProvider
+                && AppFilter.isExemptPackage(lpparam.packageName, lpparam.appInfo)) {
+            return;
+        }
         RuntimeState.bootstrap(lpparam);
 
-        if ("android".equals(lpparam.packageName) || "system".equals(lpparam.packageName)) {
+        if (systemServer) {
             SystemServerPrivacyShield.init(lpparam);
             return;
         }
 
-        if ("com.android.providers.settings".equals(lpparam.packageName)) {
+        if (settingsProvider) {
             SystemServerPrivacyShield.hookSettingsProvider(lpparam);
             return;
         }
@@ -139,9 +150,7 @@ public class MainHook implements IXposedHookLoadPackage {
             return;
         }
 
-        if ("com.android.providers.media.module".equals(lpparam.packageName)
-                || "com.android.providers.media".equals(lpparam.packageName)
-                || "com.google.android.providers.media.module".equals(lpparam.packageName)) {
+        if (mediaProvider) {
             XposedBridge.log("[Solipsist] Hooking MediaProvider in " + lpparam.packageName);
 
             // A. Generic Filenames for Photo Picker & MediaProvider queries
