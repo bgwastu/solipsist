@@ -16,6 +16,8 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
 
+import androidx.core.content.ContextCompat;
+
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -101,11 +103,8 @@ final class RuntimeState {
                     }
                 };
                 IntentFilter filter = new IntentFilter(RuntimeBridgeReceiver.ACTION_CHANGED);
-                if (Build.VERSION.SDK_INT >= 33) {
-                    context.registerReceiver(changes, filter, Context.RECEIVER_EXPORTED);
-                } else {
-                    context.registerReceiver(changes, filter);
-                }
+                ContextCompat.registerReceiver(context, changes, filter,
+                        ContextCompat.RECEIVER_EXPORTED);
                 changeReceiverRegistered = true;
                 reportInstalled("Runtime.configBroadcast");
             } catch (Throwable t) {

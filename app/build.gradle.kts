@@ -12,7 +12,7 @@ plugins {
 
 android {
     namespace = "net.wastu.solipsist"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "net.wastu.solipsist"
@@ -51,4 +51,6 @@ android {
 
 dependencies {
     compileOnly("de.robv.android.xposed:api:82")
+    implementation("com.google.android.material:material:1.14.0")
+    implementation("androidx.recyclerview:recyclerview:1.4.0")
 }

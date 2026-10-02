@@ -7,6 +7,7 @@ import android.database.sqlite.SQLiteOpenHelper;
 import android.os.Bundle;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 /** Local, bounded diagnostics. No API results or queried values are stored. */
@@ -76,50 +77,78 @@ final class RuntimeStore extends SQLiteOpenHelper {
         }
     }
 
-    synchronized String summary() {
+    static final class Event {
+        final boolean check;
+        final long time;
+        final String packageName;
+        final String process;
+        final String name;
+        final String state;
+        final String error;
+        final long count;
+
+        Event(boolean check, long time, String packageName, String process, String name,
+                String state, String error, long count) {
+            this.check = check;
+            this.time = time;
+            this.packageName = packageName;
+            this.process = process;
+            this.name = name;
+            this.state = state;
+            this.error = error;
+            this.count = count;
+        }
+    }
+
+    static final class Snapshot {
+        final long checks;
+        final int apps;
+        final int issues;
+        final List<Event> events;
+
+        Snapshot(long checks, int apps, int issues, List<Event> events) {
+            this.checks = checks;
+            this.apps = apps;
+            this.issues = issues;
+            this.events = events;
+        }
+    }
+
+    synchronized Snapshot snapshot() {
         SQLiteDatabase db = getWritableDatabase();
         long now = System.currentTimeMillis();
         prune(db, now);
-        StringBuilder out = new StringBuilder();
-        try (Cursor c = db.rawQuery("SELECT category, SUM(total) FROM counts GROUP BY category ORDER BY category", null)) {
-            while (c.moveToNext()) out.append(c.getString(0)).append(": ").append(c.getLong(1)).append('\n');
+        long checks = 0;
+        int apps = 0;
+        int issues = 0;
+        try (Cursor c = db.rawQuery("SELECT COALESCE(SUM(total), 0), COUNT(DISTINCT package) FROM counts", null)) {
+            if (c.moveToFirst()) {
+                checks = c.getLong(0);
+                apps = c.getInt(1);
+            }
         }
-        if (out.length() == 0) out.append("No queries recorded in the last 24 hours.\n");
-        out.append("\nBy app\n");
-        try (Cursor c = db.rawQuery("SELECT package, category, SUM(total) FROM counts GROUP BY package, category ORDER BY package, category", null)) {
-            String last = "";
+        try (Cursor c = db.rawQuery("SELECT COUNT(*) FROM hooks WHERE state = 'failed'", null)) {
+            if (c.moveToFirst()) issues = c.getInt(0);
+        }
+        ArrayList<Event> events = new ArrayList<>();
+        try (Cursor c = db.rawQuery("SELECT bucket, package, category, total FROM counts "
+                + "ORDER BY bucket DESC LIMIT 200", null)) {
             while (c.moveToNext()) {
-                String pkg = c.getString(0);
-                if (!pkg.equals(last)) {
-                    out.append(pkg).append('\n');
-                    last = pkg;
+                events.add(new Event(true, c.getLong(0), c.getString(1), "", c.getString(2),
+                        "", "", c.getLong(3)));
+            }
+        }
+        for (String state : new String[] {"failed", "installed"}) {
+            try (Cursor c = db.rawQuery("SELECT time, package, process, hook, state, error FROM hooks "
+                    + "WHERE state = ? ORDER BY time DESC LIMIT 200", new String[] {state})) {
+                while (c.moveToNext()) {
+                    events.add(new Event(false, c.getLong(0), c.getString(1), c.getString(2),
+                            c.getString(3), c.getString(4), c.getString(5), 0));
                 }
-                out.append("  ").append(c.getString(1)).append(": ").append(c.getLong(2)).append('\n');
             }
         }
-        out.append("\nHook reports: ");
-        try (Cursor c = db.rawQuery("SELECT state, COUNT(*) FROM hooks GROUP BY state ORDER BY state", null)) {
-            while (c.moveToNext()) out.append(c.getString(0)).append(' ').append(c.getLong(1)).append("  ");
-        }
-        out.append("\n\nHook failures\n");
-        try (Cursor c = db.rawQuery("SELECT package, process, hook, error FROM hooks WHERE state = 'failed' ORDER BY id DESC LIMIT 40", null)) {
-            if (c.getCount() == 0) out.append("No failures reported.\n");
-            while (c.moveToNext()) {
-                out.append(c.getString(0));
-                if (!c.getString(1).isEmpty()) out.append(" (").append(c.getString(1)).append(')');
-                out.append(": ").append(c.getString(2)).append(" — ").append(c.getString(3)).append('\n');
-            }
-        }
-        out.append("\nRecent hook installations\n");
-        try (Cursor c = db.rawQuery("SELECT package, process, hook FROM hooks WHERE state = 'installed' ORDER BY id DESC LIMIT 60", null)) {
-            if (c.getCount() == 0) out.append("No hook reports yet.\n");
-            while (c.moveToNext()) {
-                out.append(c.getString(0));
-                if (!c.getString(1).isEmpty()) out.append(" (").append(c.getString(1)).append(')');
-                out.append(": ").append(c.getString(2)).append('\n');
-            }
-        }
-        return out.toString();
+        events.sort(Comparator.comparingLong((Event event) -> event.time).reversed());
+        return new Snapshot(checks, apps, issues, events);
     }
 
     private static void prune(SQLiteDatabase db, long now) {

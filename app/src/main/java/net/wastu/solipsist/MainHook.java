@@ -8,6 +8,7 @@ import android.database.CharArrayBuffer;
 import android.media.ExifInterface;
 import android.net.Uri;
 import android.os.Binder;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.CancellationSignal;
 import android.webkit.MimeTypeMap;
@@ -330,7 +331,8 @@ public class MainHook implements IXposedHookLoadPackage {
                             long[] origRanges = (long[]) param.getResult();
                             long[] extraRanges = null;
 
-                            if (ExifInterface.isSupportedMimeType(mimeType)) {
+                            if (Build.VERSION.SDK_INT >= 30
+                                    && ExifInterface.isSupportedMimeType(mimeType)) {
                                 extraRanges = getExtraSensitiveExifRanges(fis, mimeType);
                             } else if (isIsoBmffMime(mimeType)) {
                                 extraRanges = getVideoSensitiveRanges(fis);
@@ -387,6 +389,7 @@ public class MainHook implements IXposedHookLoadPackage {
         installAppMediaQueryHook();
         CameraCaptureHook.install();
         AdvancedReadObserver.install(lpparam);
+        VpnPrivacyHook.install(lpparam);
     }
 
     private static void installAppMediaQueryHook() {
@@ -633,7 +636,8 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private static long[] getExtraSensitiveExifRanges(FileInputStream fis, String mimeType) {
-        if (mimeType == null || !ExifInterface.isSupportedMimeType(mimeType)) {
+        if (Build.VERSION.SDK_INT < 30 || mimeType == null
+                || !ExifInterface.isSupportedMimeType(mimeType)) {
             return null;
         }
         try {
