@@ -51,6 +51,7 @@ final class RuntimeState {
     private static boolean observerRegistered;
     private static boolean changeReceiverRegistered;
     private static boolean workerStarted;
+    private static boolean systemAttachScheduled;
     private static boolean syncFailureReported;
     private static boolean bridgeFailureReported;
     private static boolean bridgeInFlight;
@@ -94,6 +95,10 @@ final class RuntimeState {
 
     static void attachContext(Context incoming) {
         if (incoming == null || context != null) return;
+        if (android.os.Process.myUid() == android.os.Process.SYSTEM_UID && !systemServicesReady()) {
+            scheduleSystemAttach(incoming);
+            return;
+        }
         synchronized (LOCK) {
             if (context != null) return;
             context = incoming.getApplicationContext() != null ? incoming.getApplicationContext() : incoming;
@@ -129,6 +134,28 @@ final class RuntimeState {
         }
         refreshConfig();
         flush();
+    }
+
+    private static boolean systemServicesReady() {
+        try {
+            Class<?> serviceManager = XposedHelpers.findClass("android.os.ServiceManager", null);
+            return XposedHelpers.callStaticMethod(serviceManager, "checkService", "activity") != null
+                    && XposedHelpers.callStaticMethod(serviceManager, "checkService", "content") != null
+                    && XposedHelpers.callStaticMethod(serviceManager, "checkService", "user") != null;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static void scheduleSystemAttach(Context incoming) {
+        synchronized (LOCK) {
+            if (systemAttachScheduled) return;
+            systemAttachScheduled = true;
+        }
+        WORKER.schedule(() -> {
+            synchronized (LOCK) { systemAttachScheduled = false; }
+            attachContext(incoming);
+        }, 1, TimeUnit.SECONDS);
     }
 
     private static void refreshConfig() {
