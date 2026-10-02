@@ -129,6 +129,23 @@ public class MainHook implements IXposedHookLoadPackage {
         boolean mediaProvider = "com.android.providers.media.module".equals(lpparam.packageName)
                 || "com.android.providers.media".equals(lpparam.packageName)
                 || "com.google.android.providers.media.module".equals(lpparam.packageName);
+        // Some ROMs load these package names in stub processes without the target classes.
+        if ("system".equals(lpparam.packageName)
+                && XposedHelpers.findClassIfExists(
+                        "com.android.server.accessibility.AccessibilityManagerService", lpparam.classLoader) == null
+                && XposedHelpers.findClassIfExists(
+                        "com.android.server.pm.ComputerEngine", lpparam.classLoader) == null) {
+            return;
+        }
+        if (mediaProvider
+                && XposedHelpers.findClassIfExists(
+                        "com.android.providers.media.MediaProvider", lpparam.classLoader) == null
+                && XposedHelpers.findClassIfExists(
+                        "com.android.providers.media.PickerUriResolver", lpparam.classLoader) == null
+                && XposedHelpers.findClassIfExists(
+                        "com.android.providers.media.util.RedactionUtils", lpparam.classLoader) == null) {
+            return;
+        }
         // Exempt apps do not install privacy hooks and need no cross-process status relay.
         if (!systemServer && !settingsProvider && !mediaProvider
                 && AppFilter.isExemptPackage(lpparam.packageName, lpparam.appInfo)) {

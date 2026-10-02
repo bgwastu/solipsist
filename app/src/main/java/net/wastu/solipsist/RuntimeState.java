@@ -14,6 +14,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.UserManager;
 import android.provider.Settings;
 
 import androidx.core.content.ContextCompat;
@@ -132,6 +133,7 @@ final class RuntimeState {
 
     private static void refreshConfig() {
         Context ctx = context;
+        if (ctx != null && !isUserUnlocked(ctx)) return;
         if (ctx != null && android.os.Process.myUid() % 100000 != android.os.Process.SYSTEM_UID
                 && refreshViaSettings(ctx)) return;
         if (ctx != null && System.currentTimeMillis() >= providerRetryAfter) {
@@ -247,7 +249,10 @@ final class RuntimeState {
     static void reportInstalled(String hook) { reportHook(hook, null); }
 
     static void reportHook(String hook, Throwable error) {
-        if (error != null) XposedBridge.log("[Solipsist] " + hook + " failed: " + error.getClass().getSimpleName());
+        if (error != null) {
+            XposedBridge.log("[Solipsist] " + hook + " failed: " + error);
+            XposedBridge.log(error);
+        }
         Bundle event = new Bundle();
         event.putString("kind", "hook");
         event.putString("package", processPackage);
@@ -267,7 +272,7 @@ final class RuntimeState {
 
     private static void flushLocked() {
         Context ctx = context;
-        if (ctx == null) return;
+        if (ctx == null || !isUserUnlocked(ctx)) return;
         ArrayList<Bundle> batch = new ArrayList<>();
         synchronized (LOCK) {
             if (bridgeInFlight) {
@@ -347,6 +352,15 @@ final class RuntimeState {
                 bridgeFailureReported = true;
                 reportHook("Runtime.eventBridge", t);
             }
+        }
+    }
+
+    private static boolean isUserUnlocked(Context ctx) {
+        try {
+            UserManager users = ctx.getSystemService(UserManager.class);
+            return users == null || users.isUserUnlocked();
+        } catch (Throwable ignored) {
+            return true;
         }
     }
 
