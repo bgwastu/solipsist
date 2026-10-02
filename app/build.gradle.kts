@@ -18,7 +18,8 @@ android {
         applicationId = "net.wastu.solipsist"
         minSdk = 26
         targetSdk = 34
-        versionCode = gitVersionCode.get()
+        // Keep updates above the last installed release when branches have different commit counts.
+        versionCode = maxOf(gitVersionCode.get(), 18)
         versionName = gitVersionName.get()
     }
 
